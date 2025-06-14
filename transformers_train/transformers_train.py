@@ -91,6 +91,7 @@ TRAINING_CONFIG = {
     # Progress reporting
     'log_interval': 100,  # Her 100 batch'te progress logla
     'eval_steps': 500,   # Her 500 step'te hızlı evaluation yap
+    'checkpoint_steps': 500,  # Her 2000 step'te checkpoint kaydet
     
     'vocab_size': 32000,  # SentencePiece için vocab size
 }
@@ -989,6 +990,27 @@ def train(
                     })
                 
                 model.train()  # Back to training mode
+            
+            # Step-based checkpoint saving
+            if global_step % TRAINING_CONFIG['checkpoint_steps'] == 0 and global_step > 0:
+                step_checkpoint_path = f"checkpoints/checkpoint_step_{global_step}.pt"
+                os.makedirs("checkpoints", exist_ok=True)
+                
+                checkpoint_dict = {
+                    'epoch': epoch,
+                    'global_step': global_step,
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict() if scheduler_type != 'plateau' else None,
+                    'config': MODEL_CONFIG,
+                    'tokenizer_path': tokenizer_path,
+                    'avg_train_loss': epoch_loss/num_train_batches
+                }
+                if scaler:
+                    checkpoint_dict['scaler'] = scaler.state_dict()
+                
+                torch.save(checkpoint_dict, step_checkpoint_path)
+                print(f"\n💾 Step checkpoint saved: {step_checkpoint_path}")
         
         avg_train_loss = total_train_loss / num_train_batches
         print(f"\nEpoch {epoch + 1} completed: Avg Train Loss: {avg_train_loss:.4f}")
