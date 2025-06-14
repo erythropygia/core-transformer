@@ -1280,7 +1280,7 @@ def find_latest_checkpoint(checkpoint_dir="checkpoints"):
     
     # Sort by modification time, get the latest
     latest_checkpoint = max(checkpoint_files, key=os.path.getmtime)
-    print(f"🔍 Latest checkpoint found: {latest_checkpoint}")
+    print(f"Latest checkpoint found: {latest_checkpoint}")
     return latest_checkpoint
 
 def load_and_preprocess_data(max_samples=100000):
