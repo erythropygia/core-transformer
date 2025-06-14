@@ -77,7 +77,7 @@ MODEL_CONFIG = {
     'block_size': 1024,     # 1024 context window
     'dropout': 0.1,
     'vocab_size': None,     # Tokenizer'dan alınacak
-    'use_flash_attention': True,  # Flash Attention kullan
+    'use_flash_attention': False,  # Flash Attention kullan
     'use_gradient_checkpointing': True,  # Gradient checkpointing kullan
 }
 
