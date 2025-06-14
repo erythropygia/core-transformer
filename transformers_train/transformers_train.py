@@ -221,7 +221,7 @@ class Tokenizer:
             "Öğretmenlik mesleği"
         ]
         
-        print("\n📝 Sample tokenizations:")
+        print("\nSample tokenizations:")
         for text in sample_texts:
             tokens = self.sp.encode_as_pieces(text)
             print(f"'{text}' -> {tokens}")
@@ -336,7 +336,6 @@ class Block(nn.Module):
         return x
     
     def forward(self, x):
-        # Gradient checkpointing kullan
         if self.config.get('use_gradient_checkpointing', False) and self.training:
             return checkpoint.checkpoint(self._forward_impl, x, use_reentrant=False)
         else:
@@ -481,13 +480,11 @@ class Transformers(nn.Module):
         return logits, loss
     
     def get_num_params(self):
-        """Model parametre sayısını hesaplar"""
         n_params = sum(p.numel() for p in self.parameters())
         return n_params
     
     @torch.no_grad()
     def generate(self, idx, max_new_tokens=100, temperature=1.0, top_k=None, top_p=0.9):
-        """Geliştirilmiş text generation"""
         self.eval()
         
         for _ in range(max_new_tokens):
@@ -523,7 +520,6 @@ class Transformers(nn.Module):
         return idx
     
     def generate_from_prompt(self, prompt, max_new_tokens=100, temperature=1.0, top_k=None, top_p=0.9):
-        """Prompt'tan text generation"""
         self.eval()
         tokens = self.tokenizer.encode(prompt, add_special_tokens=False)
         context = torch.tensor(tokens, dtype=torch.long, device=next(self.parameters()).device).unsqueeze(0)
@@ -568,7 +564,7 @@ def get_plateau_scheduler(optimizer, mode='min', factor=0.5, patience=3, verbose
 
 @torch.no_grad()
 def calculate_perplexity(model, data_loader, device, device_type, max_batches=100):
-    """Perplexity hesaplama"""
+    """Perplexity"""
     model.eval()
     total_loss = 0
     total_tokens = 0
@@ -911,16 +907,16 @@ def train(
         best_val_loss = resume_info['best_val_loss']
         best_perplexity = resume_info['best_perplexity']
         
-        print(f"🎯 Training will resume from Epoch {start_epoch + 1}, Step {global_step}")
+        print(f"Training will resume from Epoch {start_epoch + 1}, Step {global_step}")
     elif resume_from_checkpoint:
-        print(f"⚠️  Checkpoint file not found: {resume_from_checkpoint}")
-        print("Starting fresh training...")
+        print(f"Checkpoint file not found: {resume_from_checkpoint}")
+        print("Starting training...")
     else:
-        print("🆕 Starting fresh training...")
+        print("Starting training...")
     
     # Initialize step counter for logging (adjust if resuming)
     if global_step == 0:
-        global_step = 0  # Fresh start
+        global_step = 0  
     
     # Training loop
     print("Starting training...")
@@ -1067,7 +1063,7 @@ def train(
             perplexity = metrics['perplexity']
             
             # Main metrics
-            print(f"📊 TRAINING METRICS:")
+            print(f"TRAINING METRICS:")
             print(f"   Train Loss: {avg_train_loss:.4f}")
             print(f"   Val Loss: {val_loss:.4f}")
             print(f"   Perplexity: {perplexity:.2f}")
@@ -1075,14 +1071,14 @@ def train(
             
             # Generation quality
             if metrics.get('avg_gen_length', 0) > 0:
-                print(f"📝 GENERATION QUALITY:")
+                print(f"GENERATION QUALITY:")
                 print(f"   Avg Length: {metrics.get('avg_gen_length', 0):.1f} tokens")
                 print(f"   Unique Token Ratio: {metrics.get('unique_token_ratio', 0):.3f}")
             
             # Show one generation sample
             if 'generation' in metrics and metrics['generation']['samples']:
                 sample = metrics['generation']['samples'][0]
-                print(f"🎯 SAMPLE GENERATION:")
+                print(f"SAMPLE GENERATION:")
                 print(f"   Prompt: {sample['prompt']}")
                 print(f"   Generated: {sample['generated'][:150]}{'...' if len(sample['generated']) > 150 else ''}")
             
@@ -1116,7 +1112,7 @@ def train(
                     best_val_loss, best_perplexity, MODEL_CONFIG, tokenizer_path,
                     checkpoint_path="checkpoints/best_model_100m.safetensors"
                 )
-                print(f"🎉 New best model saved! Val loss: {val_loss:.4f}, Perplexity: {perplexity:.2f}")
+                print(f"New best model saved! Val loss: {val_loss:.4f}, Perplexity: {perplexity:.2f}")
         
         # Save checkpoint
         if (epoch + 1) % TRAINING_CONFIG['save_interval'] == 0:
@@ -1193,7 +1189,7 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
     
     torch.save(additional_state, additional_state_path)
     
-    print(f"💾 Checkpoint saved: {os.path.basename(checkpoint_path)}")
+    print(f"Checkpoint saved: {os.path.basename(checkpoint_path)}")
     
     return checkpoint_path
 
@@ -1201,7 +1197,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
     """
     Comprehensive checkpoint loading with SafeTensors format
     """
-    print(f"📂 Loading checkpoint from: {checkpoint_path}")
+    print(f"Loading checkpoint from: {checkpoint_path}")
     
     if not checkpoint_path.endswith('.safetensors'):
         checkpoint_path = checkpoint_path.replace('.pt', '.safetensors')
@@ -1228,7 +1224,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
         model_state['lm_head.weight'] = model_state['wte.weight']
     
     model.load_state_dict(model_state)
-    print("✅ Model weights loaded from SafeTensors")
+    print("Model weights loaded from SafeTensors")
     
     # Load additional training state
     additional_state_path = checkpoint_path.replace('.safetensors', '_state.pt')
@@ -1240,17 +1236,17 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
         # Load optimizer state
         if optimizer and 'optimizer' in additional_state:
             optimizer.load_state_dict(additional_state['optimizer'])
-            print("✅ Optimizer state loaded")
+            print("Optimizer state loaded")
         
         # Load scheduler state
         if scheduler and 'scheduler' in additional_state and additional_state['scheduler']:
             scheduler.load_state_dict(additional_state['scheduler'])
-            print("✅ Scheduler state loaded")
+            print("Scheduler state loaded")
         
         # Load scaler state
         if scaler and 'scaler' in additional_state:
             scaler.load_state_dict(additional_state['scaler'])
-            print("✅ Scaler state loaded")
+            print("Scaler state loaded")
     
     # Parse metadata
     resume_info = {
@@ -1262,8 +1258,8 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
         'tokenizer_path': metadata.get('tokenizer_path', ''),
     }
     
-    print(f"📊 Resume info: Epoch {resume_info['epoch']}, Step {resume_info['global_step']}")
-    print(f"🎯 Best metrics: Val Loss {resume_info['best_val_loss']:.4f}, Perplexity {resume_info['best_perplexity']:.2f}")
+    print(f"Resume info: Epoch {resume_info['epoch']}, Step {resume_info['global_step']}")
+    print(f"Best metrics: Val Loss {resume_info['best_val_loss']:.4f}, Perplexity {resume_info['best_perplexity']:.2f}")
     
     return resume_info
 
