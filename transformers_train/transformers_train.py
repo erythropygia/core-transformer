@@ -91,7 +91,7 @@ TRAINING_CONFIG = {
     # Progress reporting
     'log_interval': 100,  # Her 100 batch'te progress logla
     'eval_steps': 500,   # Her 500 step'te hızlı evaluation yap
-    'checkpoint_steps': 500,  # Her 2000 step'te checkpoint kaydet
+    'checkpoint_steps': 100,  # Her 100 step'te checkpoint kaydet
     
     'vocab_size': 32000,  # SentencePiece için vocab size
 }
