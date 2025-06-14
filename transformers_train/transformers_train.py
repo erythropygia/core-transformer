@@ -21,6 +21,18 @@ import numpy as np
 
 # Global flags to prevent spam messages
 _MESSAGES_PRINTED = False
+_WEIGHT_TYING_MSG_PRINTED = False  # Add flag for weight tying message
+
+# SafeTensors import for secure model saving
+try:
+    from safetensors.torch import save_file, load_file
+    SAFETENSORS_AVAILABLE = True
+    if not _MESSAGES_PRINTED:
+        print("SafeTensors available - using secure model format")
+except ImportError:
+    SAFETENSORS_AVAILABLE = False
+    if not _MESSAGES_PRINTED:
+        print("SafeTensors not available, install with: pip install safetensors")
 
 # SentencePiece import for Turkish tokenization
 try:
@@ -91,7 +103,7 @@ TRAINING_CONFIG = {
     # Progress reporting
     'log_interval': 100,  # Her 100 batch'te progress logla
     'eval_steps': 500,   # Her 500 step'te hızlı evaluation yap
-    'checkpoint_steps': 100,  # Her 100 step'te checkpoint kaydet
+    'checkpoint_steps': 2,  # Her 100 step'te checkpoint kaydet
     
     'vocab_size': 32000,  # SentencePiece için vocab size
 }
@@ -195,7 +207,7 @@ class Tokenizer:
         os.remove(corpus_file)
         
         if verbose:
-            print(f"✅ SentencePiece model trained and saved: {self.model_path}")
+            print(f"SentencePiece model trained and saved: {self.model_path}")
             print(f"Actual vocab size: {self.sp.get_piece_size()}")
             self._print_sample_tokens()
     
@@ -278,7 +290,7 @@ def create_tokenizer(model_path: str = None) -> Tokenizer:
         raise FileNotFoundError(f"Tokenizer file not found: {model_path}")
     
     tokenizer = Tokenizer(model_path)
-    print(f"🎉 Using SentencePiece tokenizer (vocab_size: {tokenizer.vocab_size})")
+    print(f"Using SentencePiece tokenizer (vocab_size: {tokenizer.vocab_size})")
     return tokenizer
 
 
@@ -555,7 +567,7 @@ def get_plateau_scheduler(optimizer, mode='min', factor=0.5, patience=3, verbose
     )
 
 @torch.no_grad()
-def calculate_perplexity(model, data_loader, device, max_batches=100):
+def calculate_perplexity(model, data_loader, device, device_type, max_batches=100):
     """Perplexity hesaplama"""
     model.eval()
     total_loss = 0
@@ -568,7 +580,7 @@ def calculate_perplexity(model, data_loader, device, max_batches=100):
             
         inputs, targets = inputs.to(device), targets.to(device)
         
-        with autocast():
+        with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
             _, loss = model(inputs, targets)
         
         batch_tokens = targets.numel()
@@ -665,7 +677,7 @@ def evaluate_model_comprehensive(model, val_loader, tokenizer, device, device_ty
     
     # 2. Perplexity
     try:
-        metrics['perplexity'] = calculate_perplexity(model, val_loader, device, max_batches)
+        metrics['perplexity'] = calculate_perplexity(model, val_loader, device, device_type, max_batches)
     except Exception as e:
         print(f"Perplexity calculation error: {e}")
         metrics['perplexity'] = float('inf')
@@ -689,6 +701,7 @@ def evaluate_model_comprehensive(model, val_loader, tokenizer, device, device_ty
 def train(
     tokenizer_path="turkish_tokenizer/turkish_tokenizer.model",
     resume_from_checkpoint=None,
+    auto_resume=True,  # Automatically find and resume from latest checkpoint
     use_wandb=True,
     project_name="transformers-100m-turkish"
 ):
@@ -732,7 +745,7 @@ def train(
     
     # Load data
     print("Loading data...")
-    full_corpus = load_and_preprocess_data(max_samples=100000)  # Daha büyük dataset
+    full_corpus = load_and_preprocess_data(max_samples=5000)  # Daha büyük dataset
     
     # Ensure tokenizer path has .model extension for SentencePiece
     if not tokenizer_path.endswith('.model'):
@@ -747,10 +760,15 @@ def train(
     
     # Update config with vocab size
     MODEL_CONFIG['vocab_size'] = tokenizer.vocab_size
+    
+    # Disable Flash Attention completely due to precision compatibility issues
+    MODEL_CONFIG['use_flash_attention'] = False
+    print("Flash Attention disabled (precision compatibility issues)")
+    
     print(f"Tokenizer vocab size: {tokenizer.vocab_size}")
     
     # Test tokenization
-    print("\n🧪 Testing tokenization:")
+    print("\nTesting tokenization:")
     test_texts = [
         "Türkiye'nin başkenti Ankara'dır.",
         "İstanbul Boğazı çok güzel.",
@@ -871,25 +889,41 @@ def train(
     start_epoch = 0
     best_val_loss = float('inf')
     best_perplexity = float('inf')
+    global_step = 0
+    
+    # Auto-resume: find latest checkpoint if no specific checkpoint given
+    if auto_resume and not resume_from_checkpoint:
+        resume_from_checkpoint = find_latest_checkpoint()
     
     if resume_from_checkpoint and os.path.exists(resume_from_checkpoint):
-        print(f"Resuming from checkpoint: {resume_from_checkpoint}")
-        checkpoint_data = torch.load(resume_from_checkpoint, map_location=device)
-        model.load_state_dict(checkpoint_data['model'])
-        optimizer.load_state_dict(checkpoint_data['optimizer'])
-        if scheduler_type != 'plateau':  # Plateau scheduler state farklı handle edilir
-            scheduler.load_state_dict(checkpoint_data['scheduler'])
-        if scaler and 'scaler' in checkpoint_data:
-            scaler.load_state_dict(checkpoint_data['scaler'])
-        start_epoch = checkpoint_data['epoch'] + 1
-        best_val_loss = checkpoint_data.get('best_val_loss', float('inf'))
-        best_perplexity = checkpoint_data.get('best_perplexity', float('inf'))
+        print(f"🔄 Resuming from checkpoint: {resume_from_checkpoint}")
+        resume_info = load_checkpoint(
+            resume_from_checkpoint, 
+            model, 
+            optimizer, 
+            scheduler if scheduler_type != 'plateau' else None, 
+            scaler, 
+            device
+        )
+        
+        start_epoch = resume_info['epoch']
+        global_step = resume_info['global_step']
+        best_val_loss = resume_info['best_val_loss']
+        best_perplexity = resume_info['best_perplexity']
+        
+        print(f"🎯 Training will resume from Epoch {start_epoch + 1}, Step {global_step}")
+    elif resume_from_checkpoint:
+        print(f"⚠️  Checkpoint file not found: {resume_from_checkpoint}")
+        print("Starting fresh training...")
+    else:
+        print("🆕 Starting fresh training...")
+    
+    # Initialize step counter for logging (adjust if resuming)
+    if global_step == 0:
+        global_step = 0  # Fresh start
     
     # Training loop
     print("Starting training...")
-    
-    # Initialize step counter for logging
-    global_step = 0
     
     for epoch in range(start_epoch, TRAINING_CONFIG['max_epochs']):
         print(f"\nEpoch {epoch + 1}/{TRAINING_CONFIG['max_epochs']}")
@@ -902,7 +936,15 @@ def train(
         
         progress_bar = tqdm(train_loader, desc=f"Training Epoch {epoch + 1}")
         
+        # Skip batches if resuming mid-epoch
+        steps_per_epoch = len(train_loader)
+        current_epoch_steps = global_step % steps_per_epoch if steps_per_epoch > 0 else 0
+        
         for batch_idx, (inputs, targets) in enumerate(progress_bar):
+            # Skip already processed steps in current epoch
+            if batch_idx < current_epoch_steps:
+                continue
+                
             inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
             
             # Gradient accumulation
@@ -916,6 +958,21 @@ def train(
             else:
                 loss.backward()
             
+            # Calculate batch loss for display
+            batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
+            total_train_loss += batch_loss
+            epoch_loss += batch_loss
+            num_train_batches += 1
+            
+            # Update progress bar every batch
+            current_lr = scheduler.get_last_lr()[0] if scheduler_type != 'plateau' else optimizer.param_groups[0]['lr']
+            progress_bar.set_postfix({
+                'loss': f"{batch_loss:.4f}",
+                'lr': f"{current_lr:.2e}",
+                'step': global_step
+            })
+            
+            # Check if we should do optimizer step (every accumulation_steps batches)
             if (batch_idx + 1) % TRAINING_CONFIG['accumulation_steps'] == 0:
                 if scaler:
                     # Gradient clipping
@@ -935,82 +992,65 @@ def train(
                     scheduler.step()
                 optimizer.zero_grad()
                 
+                # INCREMENT GLOBAL STEP AFTER OPTIMIZER STEP
                 global_step += 1
-            
-            batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
-            total_train_loss += batch_loss
-            epoch_loss += batch_loss
-            num_train_batches += 1
-            
-            # Update progress bar
-            current_lr = scheduler.get_last_lr()[0] if scheduler_type != 'plateau' else optimizer.param_groups[0]['lr']
-            progress_bar.set_postfix({
-                'loss': f"{batch_loss:.4f}",
-                'lr': f"{current_lr:.2e}",
-                'step': global_step
-            })
-            
-            # Regular logging to wandb
-            if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb and TRAINING_CONFIG['use_wandb']:
-                wandb.log({
-                    'train_loss_step': batch_loss,
-                    'learning_rate': current_lr,
-                    'global_step': global_step,
-                    'epoch': epoch + 1
+                
+                # Update progress bar with new step count
+                progress_bar.set_postfix({
+                    'loss': f"{batch_loss:.4f}",
+                    'lr': f"{current_lr:.2e}",
+                    'step': global_step
                 })
-            
-            # Quick evaluation at regular intervals
-            if global_step % TRAINING_CONFIG['eval_steps'] == 0 and global_step > 0:
-                model.eval()
-                quick_val_loss = 0
-                quick_batches = 0
                 
-                with torch.no_grad():
-                    for val_batch_idx, (val_inputs, val_targets) in enumerate(val_loader):
-                        if val_batch_idx >= 20:  # Quick evaluation with 20 batches
-                            break
-                        val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
-                        
-                        with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
-                            _, val_loss = model(val_inputs, val_targets)
-                        
-                        quick_val_loss += val_loss.item()
-                        quick_batches += 1
-                
-                avg_quick_val_loss = quick_val_loss / quick_batches if quick_batches > 0 else float('inf')
-                
-                print(f"\nStep {global_step}: Train Loss: {epoch_loss/num_train_batches:.4f}, Quick Val Loss: {avg_quick_val_loss:.4f}")
-                
-                if use_wandb and TRAINING_CONFIG['use_wandb']:
+                # Regular logging to wandb
+                if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb and TRAINING_CONFIG['use_wandb']:
                     wandb.log({
-                        'quick_val_loss': avg_quick_val_loss,
-                        'train_loss_avg': epoch_loss/num_train_batches,
+                        'train_loss_step': batch_loss,
+                        'learning_rate': current_lr,
                         'global_step': global_step,
                         'epoch': epoch + 1
                     })
                 
-                model.train()  # Back to training mode
-            
-            # Step-based checkpoint saving
-            if global_step % TRAINING_CONFIG['checkpoint_steps'] == 0 and global_step > 0:
-                step_checkpoint_path = f"checkpoints/checkpoint_step_{global_step}.pt"
-                os.makedirs("checkpoints", exist_ok=True)
+                # Quick evaluation at regular intervals
+                if global_step % TRAINING_CONFIG['eval_steps'] == 0 and global_step > 0:
+                    model.eval()
+                    quick_val_loss = 0
+                    quick_batches = 0
+                    
+                    with torch.no_grad():
+                        for val_batch_idx, (val_inputs, val_targets) in enumerate(val_loader):
+                            if val_batch_idx >= 20:  # Quick evaluation with 20 batches
+                                break
+                            val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+                            
+                            with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
+                                _, val_loss = model(val_inputs, val_targets)
+                            
+                            quick_val_loss += val_loss.item()
+                            quick_batches += 1
+                    
+                    avg_quick_val_loss = quick_val_loss / quick_batches if quick_batches > 0 else float('inf')
+                    
+                    print(f"\nStep {global_step}: Train Loss: {epoch_loss/num_train_batches:.4f}, Quick Val Loss: {avg_quick_val_loss:.4f}")
+                    
+                    if use_wandb and TRAINING_CONFIG['use_wandb']:
+                        wandb.log({
+                            'quick_val_loss': avg_quick_val_loss,
+                            'train_loss_avg': epoch_loss/num_train_batches,
+                            'global_step': global_step,
+                            'epoch': epoch + 1
+                        })
+                    
+                    model.train()  # Back to training mode
                 
-                checkpoint_dict = {
-                    'epoch': epoch,
-                    'global_step': global_step,
-                    'model': model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'scheduler': scheduler.state_dict() if scheduler_type != 'plateau' else None,
-                    'config': MODEL_CONFIG,
-                    'tokenizer_path': tokenizer_path,
-                    'avg_train_loss': epoch_loss/num_train_batches
-                }
-                if scaler:
-                    checkpoint_dict['scaler'] = scaler.state_dict()
-                
-                torch.save(checkpoint_dict, step_checkpoint_path)
-                print(f"\n💾 Step checkpoint saved: {step_checkpoint_path}")
+                # Step-based checkpoint saving
+                if global_step % TRAINING_CONFIG['checkpoint_steps'] == 0 and global_step > 0:
+                    step_checkpoint_path = f"checkpoints/checkpoint_step_{global_step}.safetensors"
+                    save_checkpoint(
+                        model, optimizer, scheduler, scaler, epoch, global_step,
+                        best_val_loss, best_perplexity, MODEL_CONFIG, tokenizer_path,
+                        checkpoint_path=step_checkpoint_path
+                    )
         
         avg_train_loss = total_train_loss / num_train_batches
         print(f"\nEpoch {epoch + 1} completed: Avg Train Loss: {avg_train_loss:.4f}")
@@ -1070,52 +1110,183 @@ def train(
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_perplexity = perplexity
-                best_model_path = "checkpoints/best_model_100m.pt"
-                os.makedirs("checkpoints", exist_ok=True)
                 
-                checkpoint_dict = {
-                    'epoch': epoch,
-                    'model': model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'scheduler': scheduler.state_dict() if scheduler_type != 'plateau' else None,
-                    'best_val_loss': best_val_loss,
-                    'best_perplexity': best_perplexity,
-                    'config': MODEL_CONFIG,
-                    'tokenizer_path': tokenizer_path,
-                    'metrics': metrics
-                }
-                if scaler:
-                    checkpoint_dict['scaler'] = scaler.state_dict()
-                
-                torch.save(checkpoint_dict, best_model_path)
+                save_checkpoint(
+                    model, optimizer, scheduler, scaler, epoch, global_step,
+                    best_val_loss, best_perplexity, MODEL_CONFIG, tokenizer_path,
+                    checkpoint_path="checkpoints/best_model_100m.safetensors"
+                )
                 print(f"🎉 New best model saved! Val loss: {val_loss:.4f}, Perplexity: {perplexity:.2f}")
         
         # Save checkpoint
         if (epoch + 1) % TRAINING_CONFIG['save_interval'] == 0:
-            checkpoint_path = f"checkpoints/checkpoint_epoch_{epoch + 1}.pt"
-            checkpoint_dict = {
-                'epoch': epoch,
-                'model': model.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict() if scheduler_type != 'plateau' else None,
-                'best_val_loss': best_val_loss,
-                'best_perplexity': best_perplexity,
-                'config': MODEL_CONFIG,
-                'tokenizer_path': tokenizer_path
-            }
-            if scaler:
-                checkpoint_dict['scaler'] = scaler.state_dict()
-            
-            torch.save(checkpoint_dict, checkpoint_path)
-            print(f"Checkpoint saved: {checkpoint_path}")
+            checkpoint_path = f"checkpoints/checkpoint_epoch_{epoch + 1}.safetensors"
+            save_checkpoint(
+                model, optimizer, scheduler, scaler, epoch, global_step,
+                best_val_loss, best_perplexity, MODEL_CONFIG, tokenizer_path,
+                checkpoint_path=checkpoint_path
+            )
     
     if use_wandb and TRAINING_CONFIG['use_wandb']:
         wandb.finish()
     
-    print(f"\n🎯 Training completed! Best Val Loss: {best_val_loss:.4f}, Best Perplexity: {best_perplexity:.2f}")
+    print(f"\nTraining completed! Best Val Loss: {best_val_loss:.4f}, Best Perplexity: {best_perplexity:.2f}")
     return model
 
 # Utility functions
+def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step, 
+                   best_val_loss, best_perplexity, config, tokenizer_path, 
+                   checkpoint_path="checkpoint.safetensors", use_safetensors=True):
+    """
+    Comprehensive checkpoint saving with SafeTensors format
+    """
+    global _WEIGHT_TYING_MSG_PRINTED
+    
+    # Ensure .safetensors extension
+    if not checkpoint_path.endswith('.safetensors'):
+        checkpoint_path = checkpoint_path.replace('.pt', '.safetensors')
+    
+    os.makedirs(os.path.dirname(checkpoint_path) if os.path.dirname(checkpoint_path) else ".", exist_ok=True)
+    
+    if not SAFETENSORS_AVAILABLE:
+        raise ImportError("SafeTensors not available. Install with: pip install safetensors")
+    
+    # Prepare model state dict for SafeTensors
+    model_state = model.state_dict()
+    
+    # Handle weight tying - SafeTensors doesn't like shared tensors
+    # Remove lm_head.weight since it's tied to wte.weight
+    if 'lm_head.weight' in model_state and 'wte.weight' in model_state:
+        # Check if they are the same tensor (weight tying)
+        if model_state['lm_head.weight'].data_ptr() == model_state['wte.weight'].data_ptr():
+            # Remove the tied weight, we'll restore it during loading
+            model_state = {k: v for k, v in model_state.items() if k != 'lm_head.weight'}
+            if not _WEIGHT_TYING_MSG_PRINTED:
+                print("🔗 Weight tying detected - excluding lm_head.weight from SafeTensors")
+                _WEIGHT_TYING_MSG_PRINTED = True
+    
+    # Prepare metadata for SafeTensors
+    metadata = {
+        'epoch': str(epoch),
+        'global_step': str(global_step),
+        'best_val_loss': str(best_val_loss),
+        'best_perplexity': str(best_perplexity),
+        'config': json.dumps(config),
+        'tokenizer_path': tokenizer_path,
+        'training_config': json.dumps(TRAINING_CONFIG),
+        'model_config': json.dumps(MODEL_CONFIG),
+        'weight_tying': 'true'  # Flag to indicate weight tying
+    }
+    
+    # Save model weights with metadata to SafeTensors
+    save_file(model_state, checkpoint_path, metadata=metadata)
+    
+    # Save optimizer and scheduler state separately (SafeTensors doesn't support these complex objects)
+    additional_state_path = checkpoint_path.replace('.safetensors', '_state.pt')
+    additional_state = {
+        'optimizer': optimizer.state_dict(),
+        'scheduler': scheduler.state_dict() if scheduler else None,
+    }
+    
+    if scaler:
+        additional_state['scaler'] = scaler.state_dict()
+    
+    torch.save(additional_state, additional_state_path)
+    
+    print(f"💾 Checkpoint saved: {os.path.basename(checkpoint_path)}")
+    
+    return checkpoint_path
+
+def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scaler=None, device=None):
+    """
+    Comprehensive checkpoint loading with SafeTensors format
+    """
+    print(f"📂 Loading checkpoint from: {checkpoint_path}")
+    
+    if not checkpoint_path.endswith('.safetensors'):
+        checkpoint_path = checkpoint_path.replace('.pt', '.safetensors')
+    
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    
+    if not SAFETENSORS_AVAILABLE:
+        raise ImportError("SafeTensors not available. Install with: pip install safetensors")
+    
+    # Load metadata first
+    from safetensors import safe_open
+    metadata = {}
+    with safe_open(checkpoint_path, framework="pt") as f:
+        metadata = f.metadata()
+    
+    # Load model weights from SafeTensors
+    model_state = load_file(checkpoint_path)
+    
+    # Handle weight tying restoration
+    if metadata.get('weight_tying') == 'true' and 'lm_head.weight' not in model_state and 'wte.weight' in model_state:
+        # Restore weight tying by copying wte.weight to lm_head.weight
+        print("🔗 Restoring weight tying for lm_head.weight")
+        model_state['lm_head.weight'] = model_state['wte.weight']
+    
+    model.load_state_dict(model_state)
+    print("✅ Model weights loaded from SafeTensors")
+    
+    # Load additional training state
+    additional_state_path = checkpoint_path.replace('.safetensors', '_state.pt')
+    additional_state = {}
+    
+    if os.path.exists(additional_state_path):
+        additional_state = torch.load(additional_state_path, map_location=device, weights_only=True)
+        
+        # Load optimizer state
+        if optimizer and 'optimizer' in additional_state:
+            optimizer.load_state_dict(additional_state['optimizer'])
+            print("✅ Optimizer state loaded")
+        
+        # Load scheduler state
+        if scheduler and 'scheduler' in additional_state and additional_state['scheduler']:
+            scheduler.load_state_dict(additional_state['scheduler'])
+            print("✅ Scheduler state loaded")
+        
+        # Load scaler state
+        if scaler and 'scaler' in additional_state:
+            scaler.load_state_dict(additional_state['scaler'])
+            print("✅ Scaler state loaded")
+    
+    # Parse metadata
+    resume_info = {
+        'epoch': int(metadata.get('epoch', '0')),
+        'global_step': int(metadata.get('global_step', '0')),
+        'best_val_loss': float(metadata.get('best_val_loss', 'inf')),
+        'best_perplexity': float(metadata.get('best_perplexity', 'inf')),
+        'config': json.loads(metadata.get('config', '{}')),
+        'tokenizer_path': metadata.get('tokenizer_path', ''),
+    }
+    
+    print(f"📊 Resume info: Epoch {resume_info['epoch']}, Step {resume_info['global_step']}")
+    print(f"🎯 Best metrics: Val Loss {resume_info['best_val_loss']:.4f}, Perplexity {resume_info['best_perplexity']:.2f}")
+    
+    return resume_info
+
+def find_latest_checkpoint(checkpoint_dir="checkpoints"):
+    """
+    Find the latest SafeTensors checkpoint file in the directory
+    """
+    if not os.path.exists(checkpoint_dir):
+        return None
+    
+    checkpoint_files = []
+    for file in os.listdir(checkpoint_dir):
+        if file.startswith('checkpoint_') and file.endswith('.safetensors'):
+            checkpoint_files.append(os.path.join(checkpoint_dir, file))
+    
+    if not checkpoint_files:
+        return None
+    
+    # Sort by modification time, get the latest
+    latest_checkpoint = max(checkpoint_files, key=os.path.getmtime)
+    print(f"🔍 Latest checkpoint found: {latest_checkpoint}")
+    return latest_checkpoint
+
 def load_and_preprocess_data(max_samples=100000):
     """Load and preprocess Turkish Wikipedia data"""
     def clean_text(text: str) -> str:
@@ -1134,5 +1305,88 @@ def load_and_preprocess_data(max_samples=100000):
     
     return processed_texts
 
+def generate(text, 
+             model_path="checkpoints/best_model_100m.safetensors",
+             tokenizer_path="turkish_tokenizer/turkish_tokenizer.model",
+             max_new_tokens=100,
+             temperature=0.8,
+             top_p=0.9,
+             top_k=50,
+             device=None):
+
+    # Device setup
+    if device is None:
+        if torch.backends.mps.is_available():
+            device = torch.device('mps')
+        elif torch.cuda.is_available():
+            device = torch.device('cuda')
+        else:
+            device = torch.device('cpu')
+    
+    print(f"Loading model from: {model_path}")
+    print(f"Using device: {device}")
+    
+    if not SAFETENSORS_AVAILABLE:
+        raise ImportError("SafeTensors not available. Install with: pip install safetensors")
+    
+    tokenizer = create_tokenizer(model_path=tokenizer_path)
+    
+    # Ensure .safetensors extension
+    if not model_path.endswith('.safetensors'):
+        model_path = model_path.replace('.pt', '.safetensors')
+    
+    # Load model metadata from SafeTensors
+    from safetensors import safe_open
+    metadata = {}
+    with safe_open(model_path, framework="pt") as f:
+        metadata = f.metadata()
+    
+    config = json.loads(metadata.get('config', '{}'))
+    
+    # Load model
+    model = Transformers(config, tokenizer).to(device)
+    
+    # Load model weights from SafeTensors
+    model_state = load_file(model_path)
+    
+    # Handle weight tying restoration
+    if metadata.get('weight_tying') == 'true' and 'lm_head.weight' not in model_state and 'wte.weight' in model_state:
+        # Restore weight tying by copying wte.weight to lm_head.weight
+        print("🔗 Restoring weight tying for lm_head.weight")
+        model_state['lm_head.weight'] = model_state['wte.weight']
+    
+    model.load_state_dict(model_state)
+    print(f"Model weights loaded from SafeTensors: {model_path}")
+    
+    model.eval()
+    
+    print(f"Model parameters: {model.get_num_params()/1e6:.1f}M")
+    print(f"Vocab size: {tokenizer.vocab_size}")
+    
+    
+    with torch.no_grad():
+        generated_text = model.generate_from_prompt(
+            text, 
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k
+        )
+    
+    print(f"Generated text:\n{generated_text}")
+    print("="*60)
+    
+    return generated_text
+
 if __name__ == "__main__":
+    # Fresh training
     model = train()
+
+    # Auto-resume (en son checkpoint'ten devam)
+    #model = train(auto_resume=True)
+
+    # Specific checkpoint'ten devam
+    #model = train(resume_from_checkpoint="checkpoints/checkpoint_step_1.safetensors")
+
+    # Model generate (SafeTensors)
+    #generate("Türkiye'nin başkenti", model_path="checkpoints/checkpoint_step_1.safetensors")
