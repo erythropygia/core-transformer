@@ -101,7 +101,7 @@ TRAINING_CONFIG = {
     'max_eval_batches': 100,  # Evaluation batch limiti
     
     # Progress reporting
-    'log_interval': 100,  # Her 100 batch'te progress logla
+    'log_interval': 10,  # Her 100 batch'te progress logla
     'eval_steps': 500,   # Her 500 step'te hızlı evaluation yap
     'checkpoint_steps': 50,  # Her 100 step'te checkpoint kaydet
     
@@ -741,7 +741,7 @@ def train(
     
     # Load data
     print("Loading data...")
-    full_corpus = load_and_preprocess_data(max_samples=5000)  # Daha büyük dataset
+    full_corpus = load_and_preprocess_data(max_samples=100000)  # Daha büyük dataset
     
     # Ensure tokenizer path has .model extension for SentencePiece
     if not tokenizer_path.endswith('.model'):
