@@ -48,9 +48,9 @@ except ImportError:
 # Flash Attention import (optional)
 try:
     from flash_attn import flash_attn_func
-    FLASH_ATTENTION_AVAILABLE = True
+    FLASH_ATTENTION_AVAILABLE = False
     if not _MESSAGES_PRINTED:
-        print("Flash Attention available!")
+        print("Flash Attention available! But false by default due to precision issues")
 except ImportError:
     FLASH_ATTENTION_AVAILABLE = False
     if not _MESSAGES_PRINTED:
@@ -103,7 +103,7 @@ TRAINING_CONFIG = {
     # Progress reporting
     'log_interval': 100,  # Her 100 batch'te progress logla
     'eval_steps': 500,   # Her 500 step'te hızlı evaluation yap
-    'checkpoint_steps': 2,  # Her 100 step'te checkpoint kaydet
+    'checkpoint_steps': 50,  # Her 100 step'te checkpoint kaydet
     
     'vocab_size': 32000,  # SentencePiece için vocab size
 }
