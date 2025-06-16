@@ -83,7 +83,7 @@ MODEL_CONFIG = {
 
 # Eğitim Konfigürasyonu
 TRAINING_CONFIG = {
-    'batch_size': 16,       # Büyük model için küçük batch
+    'batch_size': 32,       # Büyük model için küçük batch
     'learning_rate': 6e-4,  # Biraz daha büyük LR
     'weight_decay': 0.1,
     'beta1': 0.9,
@@ -103,7 +103,7 @@ TRAINING_CONFIG = {
     # Progress reporting
     'log_interval': 10,  # Her 100 batch'te progress logla
     'eval_steps': 500,   # Her 500 step'te hızlı evaluation yap
-    'checkpoint_steps': 1,  # Her 100 step'te checkpoint kaydet
+    'checkpoint_steps': 10,  # Her 100 step'te checkpoint kaydet
     
     'vocab_size': 32000,  # SentencePiece için vocab size
 }
@@ -765,7 +765,7 @@ def train(
     
     # Load data
     print("Loading data...")
-    full_corpus = load_and_preprocess_data(max_samples=1000)  # Daha büyük dataset
+    full_corpus = load_and_preprocess_data(max_samples=10000)  # Daha büyük dataset
     
     # Ensure tokenizer path has .model extension for SentencePiece
     if not tokenizer_path.endswith('.model'):
@@ -1312,7 +1312,7 @@ def find_latest_checkpoint(checkpoint_dir="checkpoints"):
     print(f"Latest checkpoint found: {latest_checkpoint}")
     return latest_checkpoint
 
-def load_and_preprocess_data(max_samples=100000):
+def load_and_preprocess_data(max_samples=5000):
     """Load and preprocess Turkish Wikipedia data"""
     def clean_text(text: str) -> str:
         text = unicodedata.normalize("NFKC", text)
