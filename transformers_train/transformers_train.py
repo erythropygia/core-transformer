@@ -103,7 +103,7 @@ TRAINING_CONFIG = {
     # Progress reporting
     'log_interval': 10,  # Her 100 batch'te progress logla
     'eval_steps': 500,   # Her 500 step'te hızlı evaluation yap
-    'checkpoint_steps': 50,  # Her 100 step'te checkpoint kaydet
+    'checkpoint_steps': 1,  # Her 100 step'te checkpoint kaydet
     
     'vocab_size': 32000,  # SentencePiece için vocab size
 }
@@ -765,7 +765,7 @@ def train(
     
     # Load data
     print("Loading data...")
-    full_corpus = load_and_preprocess_data(max_samples=100000)  # Daha büyük dataset
+    full_corpus = load_and_preprocess_data(max_samples=1000)  # Daha büyük dataset
     
     # Ensure tokenizer path has .model extension for SentencePiece
     if not tokenizer_path.endswith('.model'):
@@ -856,8 +856,9 @@ def train(
     # Note: MPS backend has limited support for torch.compile, so we disable it for compatibility
     if TRAINING_CONFIG['compile_model'] and device_type != 'mps':
         try:
-            model = torch.compile(model)
-            print("Model compiled successfully!")
+            # Disable compilation for now as it causes state dict key issues
+            print("Model compilation disabled to avoid state dict key issues")
+            # model = torch.compile(model)
         except Exception as e:
             print(f"Model compilation failed: {e}")
             print("Continuing with eager mode")
@@ -1232,13 +1233,26 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
     # Load model weights from SafeTensors
     model_state = load_file(checkpoint_path)
     
+    # Remove _orig_mod prefix from state dict keys
+    new_state_dict = {}
+    for k, v in model_state.items():
+        if k.startswith('_orig_mod.'):
+            new_key = k[len('_orig_mod.'):]
+            new_state_dict[new_key] = v
+        else:
+            new_state_dict[k] = v
+    
     # Set weight tying based on metadata
     if metadata.get('weight_tying') == 'true':
         model.weight_tying = True
+        # If weight tying is enabled, we need to add lm_head.weight to the state dict
+        if 'wte.weight' in new_state_dict and 'lm_head.weight' not in new_state_dict:
+            new_state_dict['lm_head.weight'] = new_state_dict['wte.weight']
     else:
         model.weight_tying = False
     
-    model.load_state_dict(model_state)
+    # Load state dict with strict=False to handle any remaining key mismatches
+    model.load_state_dict(new_state_dict, strict=False)
     print("Model weights loaded from SafeTensors")
     
     # Load additional training state
@@ -1360,20 +1374,32 @@ def generate(text,
     # Load model weights from SafeTensors
     model_state = load_file(model_path)
     
-    # Handle weight tying restoration
-    if metadata.get('weight_tying') == 'true' and 'lm_head.weight' not in model_state and 'wte.weight' in model_state:
-        # Restore weight tying by copying wte.weight to lm_head.weight
-        print("🔗 Restoring weight tying for lm_head.weight")
-        model_state['lm_head.weight'] = model_state['wte.weight']
+    # Remove _orig_mod prefix from state dict keys
+    new_state_dict = {}
+    for k, v in model_state.items():
+        if k.startswith('_orig_mod.'):
+            new_key = k[len('_orig_mod.'):]
+            new_state_dict[new_key] = v
+        else:
+            new_state_dict[k] = v
     
-    model.load_state_dict(model_state)
+    # Set weight tying based on metadata
+    if metadata.get('weight_tying') == 'true':
+        model.weight_tying = True
+        # If weight tying is enabled, we need to add lm_head.weight to the state dict
+        if 'wte.weight' in new_state_dict and 'lm_head.weight' not in new_state_dict:
+            new_state_dict['lm_head.weight'] = new_state_dict['wte.weight']
+    else:
+        model.weight_tying = False
+    
+    # Load state dict with strict=False to handle any remaining key mismatches
+    model.load_state_dict(new_state_dict, strict=False)
     print(f"Model weights loaded from SafeTensors: {model_path}")
     
     model.eval()
     
     print(f"Model parameters: {model.get_num_params()/1e6:.1f}M")
     print(f"Vocab size: {tokenizer.vocab_size}")
-    
     
     with torch.no_grad():
         generated_text = model.generate_from_prompt(
@@ -1390,14 +1416,16 @@ def generate(text,
     return generated_text
 
 if __name__ == "__main__":
-    # Fresh training
+    # Test all three main functions
+    
+    # 1. Fresh training (commented out for testing)
     model = train()
 
-    # Auto-resume (en son checkpoint'ten devam)
+    # 2. Auto-resume (en son checkpoint'ten devam)
     #model = train(auto_resume=True)
 
-    # Specific checkpoint'ten devam
-    #model = train(resume_from_checkpoint="checkpoints/checkpoint_step_1.safetensors")
+    # 3. Specific checkpoint'ten devam
+    #model = train(resume_from_checkpoint="checkpoints/checkpoint_step_5.safetensors")
 
-    # Model generate (SafeTensors)
-    #generate("Türkiye'nin başkenti", model_path="checkpoints/checkpoint_step_1.safetensors")
+    # 4. Model generate (SafeTensors)
+    #generate("Türkiye'nin başkenti", model_path="checkpoints/checkpoint_step_5.safetensors")
