@@ -433,7 +433,8 @@ class Transformers(nn.Module):
         self.lm_head = nn.Linear(config['n_embd'], config['vocab_size'], bias=False)
         
         # Weight tying (embeddings ve output projection aynı ağırlıkları paylaşır)
-        self.lm_head.weight = self.wte.weight
+        # Instead of direct assignment, we'll use a property to handle weight tying
+        self._weight_tying = True
         
         # Initialize weights
         self.apply(self._init_weights)
@@ -442,6 +443,22 @@ class Transformers(nn.Module):
         for pn, p in self.named_parameters():
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config['n_layer']))
+    
+    @property
+    def weight_tying(self):
+        return self._weight_tying
+    
+    @weight_tying.setter
+    def weight_tying(self, value):
+        self._weight_tying = value
+        if value:
+            # When enabling weight tying, we don't actually share the weights
+            # Instead, we'll handle it in forward pass
+            pass
+        else:
+            # When disabling weight tying, we need to create a new weight tensor
+            if hasattr(self, 'wte'):
+                self.lm_head.weight = nn.Parameter(self.wte.weight.clone())
     
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -471,7 +488,14 @@ class Transformers(nn.Module):
         
         # Final layer norm ve output projection
         x = self.ln_f(x)
-        logits = self.lm_head(x)
+        
+        # Handle weight tying in forward pass
+        if self._weight_tying:
+            # Use embedding weights directly for output projection
+            logits = F.linear(x, self.wte.weight)
+        else:
+            # Use separate weights
+            logits = self.lm_head(x)
         
         loss = None
         if targets is not None:
@@ -1136,8 +1160,6 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
     """
     Comprehensive checkpoint saving with SafeTensors format
     """
-    global _WEIGHT_TYING_MSG_PRINTED
-    
     # Ensure .safetensors extension
     if not checkpoint_path.endswith('.safetensors'):
         checkpoint_path = checkpoint_path.replace('.pt', '.safetensors')
@@ -1150,16 +1172,9 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
     # Prepare model state dict for SafeTensors
     model_state = model.state_dict()
     
-    # Handle weight tying - SafeTensors doesn't like shared tensors
-    # Remove lm_head.weight since it's tied to wte.weight
-    if 'lm_head.weight' in model_state and 'wte.weight' in model_state:
-        # Check if they are the same tensor (weight tying)
-        if model_state['lm_head.weight'].data_ptr() == model_state['wte.weight'].data_ptr():
-            # Remove the tied weight, we'll restore it during loading
-            model_state = {k: v for k, v in model_state.items() if k != 'lm_head.weight'}
-            if not _WEIGHT_TYING_MSG_PRINTED:
-                print("🔗 Weight tying detected - excluding lm_head.weight from SafeTensors")
-                _WEIGHT_TYING_MSG_PRINTED = True
+    # Remove lm_head.weight since we handle weight tying in forward pass
+    if 'lm_head.weight' in model_state:
+        del model_state['lm_head.weight']
     
     # Prepare metadata for SafeTensors
     metadata = {
@@ -1217,11 +1232,11 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
     # Load model weights from SafeTensors
     model_state = load_file(checkpoint_path)
     
-    # Handle weight tying restoration
-    if metadata.get('weight_tying') == 'true' and 'lm_head.weight' not in model_state and 'wte.weight' in model_state:
-        # Restore weight tying by copying wte.weight to lm_head.weight
-        print("🔗 Restoring weight tying for lm_head.weight")
-        model_state['lm_head.weight'] = model_state['wte.weight']
+    # Set weight tying based on metadata
+    if metadata.get('weight_tying') == 'true':
+        model.weight_tying = True
+    else:
+        model.weight_tying = False
     
     model.load_state_dict(model_state)
     print("Model weights loaded from SafeTensors")
