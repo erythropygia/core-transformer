@@ -83,14 +83,14 @@ MODEL_CONFIG = {
 
 # Eğitim Konfigürasyonu
 TRAINING_CONFIG = {
-    'batch_size': 32,       # Büyük model için küçük batch
+    'batch_size': 16,       # Büyük model için küçük batch
     'learning_rate': 6e-4,  # Biraz daha büyük LR
     'weight_decay': 0.1,
     'beta1': 0.9,
     'beta2': 0.95,
     'grad_clip': 1.0,
     'warmup_epochs': 2,
-    'max_epochs': 20,
+    'max_epochs': 100,       # 20 epoch daha eğitim için 40'a çıkarıldı
     'eval_interval': 1,     # Her epoch'ta evaluate et
     'save_interval': 2,     # Her 2 epoch'ta kaydet
     'accumulation_steps': 8, # Gradient accumulation
@@ -723,7 +723,9 @@ def train(
     resume_from_checkpoint=None,
     auto_resume=True,  # Automatically find and resume from latest checkpoint
     use_wandb=True,
-    project_name="transformers-100m-turkish"
+    project_name="transformers-100m-turkish",
+    pretrained_model_path=None,  # Önceden eğitilmiş modeli yükle ve TEKRAR eğit
+    fresh_epochs=None  # Kaç epoch eğitilecek (pretrained model için)
 ):
     
     # Configure torch._dynamo to suppress errors and fall back to eager mode
@@ -765,7 +767,7 @@ def train(
     
     # Load data
     print("Loading data...")
-    full_corpus = load_and_preprocess_data(max_samples=10000)  # Daha büyük dataset
+    full_corpus = load_and_preprocess_data(max_samples=5000)  # Daha büyük dataset
     
     # Ensure tokenizer path has .model extension for SentencePiece
     if not tokenizer_path.endswith('.model'):
@@ -848,6 +850,35 @@ def train(
     model = Transformers(MODEL_CONFIG, tokenizer).to(device)
     print(f"Model parameters: {model.get_num_params()/1e6:.2f}M")
     
+    # Load pretrained model if specified (FRESH TRAINING mode)
+    if pretrained_model_path and os.path.exists(pretrained_model_path):
+        print(f"Loading pretrained model: {pretrained_model_path}")
+        
+        # Load model state from SafeTensors
+        from safetensors import safe_open
+        model_state = load_file(pretrained_model_path)
+        
+        # Remove _orig_mod prefix from state dict keys
+        new_state_dict = {}
+        for k, v in model_state.items():
+            if k.startswith('_orig_mod.'):
+                new_key = k[len('_orig_mod.'):]
+                new_state_dict[new_key] = v
+            else:
+                new_state_dict[k] = v
+        
+        # Load model weights (strict=False to handle weight tying)
+        model.load_state_dict(new_state_dict, strict=False)
+        print("Pretrained model weights loaded!")
+        
+        # Override max_epochs if fresh_epochs is specified
+        if fresh_epochs:
+            original_max_epochs = TRAINING_CONFIG['max_epochs']
+            TRAINING_CONFIG['max_epochs'] = fresh_epochs
+            print(f"Training: {fresh_epochs} epochs (original: {original_max_epochs})")
+        
+        print("Starting training from pretrained weights (epoch 0)")
+    
     # Model features info
     print(f"Using Flash Attention: {MODEL_CONFIG.get('use_flash_attention', False) and FLASH_ATTENTION_AVAILABLE}")
     print(f"Using Gradient Checkpointing: {MODEL_CONFIG.get('use_gradient_checkpointing', False)}")
@@ -912,32 +943,36 @@ def train(
     best_perplexity = float('inf')
     global_step = 0
     
-    # Auto-resume: find latest checkpoint if no specific checkpoint given
-    if auto_resume and not resume_from_checkpoint:
-        resume_from_checkpoint = find_latest_checkpoint()
-    
-    if resume_from_checkpoint and os.path.exists(resume_from_checkpoint):
-        print(f"🔄 Resuming from checkpoint: {resume_from_checkpoint}")
-        resume_info = load_checkpoint(
-            resume_from_checkpoint, 
-            model, 
-            optimizer, 
-            scheduler if scheduler_type != 'plateau' else None, 
-            scaler, 
-            device
-        )
-        
-        start_epoch = resume_info['epoch']
-        global_step = resume_info['global_step']
-        best_val_loss = resume_info['best_val_loss']
-        best_perplexity = resume_info['best_perplexity']
-        
-        print(f"Training will resume from Epoch {start_epoch + 1}, Step {global_step}")
-    elif resume_from_checkpoint:
-        print(f"Checkpoint file not found: {resume_from_checkpoint}")
-        print("Starting training...")
+    # FRESH TRAINING mode: skip resume logic
+    if pretrained_model_path:
+        print("Pretraied model training: Skipping resume logic, starting from epoch 0")
     else:
-        print("Starting training...")
+        # Auto-resume: find latest checkpoint if no specific checkpoint given
+        if auto_resume and not resume_from_checkpoint:
+            resume_from_checkpoint = find_latest_checkpoint()
+        
+        if resume_from_checkpoint and os.path.exists(resume_from_checkpoint):
+            print(f"Resuming from checkpoint: {resume_from_checkpoint}")
+            resume_info = load_checkpoint(
+                resume_from_checkpoint, 
+                model, 
+                optimizer, 
+                scheduler if scheduler_type != 'plateau' else None, 
+                scaler, 
+                device
+            )
+            
+            start_epoch = resume_info['epoch']
+            global_step = resume_info['global_step']
+            best_val_loss = resume_info['best_val_loss']
+            best_perplexity = resume_info['best_perplexity']
+            
+            print(f"Training will resume from Epoch {start_epoch + 1}, Step {global_step}")
+        elif resume_from_checkpoint:
+            print(f"Checkpoint file not found: {resume_from_checkpoint}")
+            print("Starting training...")
+        else:
+            print("Starting training...")
     
     # Initialize step counter for logging (adjust if resuming)
     if global_step == 0:
@@ -1416,16 +1451,19 @@ def generate(text,
     return generated_text
 
 if __name__ == "__main__":
-    # Test all three main functions
+    # Test all main functions
     
-    # 1. Fresh training (commented out for testing)
-    model = train()
-
-    # 2. Auto-resume (en son checkpoint'ten devam)
+    #model = train()
     #model = train(auto_resume=True)
+    #model = train(resume_from_checkpoint="checkpoints/checkpoint_step_2.safetensors")
 
-    # 3. Specific checkpoint'ten devam
-    #model = train(resume_from_checkpoint="checkpoints/checkpoint_step_5.safetensors")
+    '''
+    model = train(
+        pretrained_model_path="checkpoints/best_model_100m.safetensors",
+        fresh_epochs=20,
+        auto_resume=False
+    )
+    '''
+    
 
-    # 4. Model generate (SafeTensors)
-    #generate("Türkiye'nin başkenti", model_path="checkpoints/checkpoint_step_5.safetensors")
+    #generate("Türkiye'nin başkenti", model_path="checkpoints/checkpoint_step_1.safetensors")
