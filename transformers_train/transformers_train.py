@@ -75,7 +75,7 @@ MODEL_CONFIG = {
     'n_layer': 12,          # 12 transformer layer
     'n_head': 12,           # 12 attention head
     'block_size': 1024,     # 1024 context window
-    'dropout': 0.1,
+    'dropout': 0.2,         # Dropout artırıldı (0.1 → 0.2) - Overfitting'e karşı
     'vocab_size': None,     # Tokenizer'dan alınacak
     'use_flash_attention': False,  # Flash Attention kullan
     'use_gradient_checkpointing': True,  # Gradient checkpointing kullan
@@ -84,13 +84,13 @@ MODEL_CONFIG = {
 # Eğitim Konfigürasyonu
 TRAINING_CONFIG = {
     'batch_size': 16,       # Büyük model için küçük batch
-    'learning_rate': 6e-4,  # Biraz daha büyük LR
-    'weight_decay': 0.1,
+    'learning_rate': 3e-4,  # LR düşürüldü (6e-4 → 3e-4) - Overfitting'e karşı
+    'weight_decay': 0.15,   # Weight decay artırıldı (0.1 → 0.15) - Regularization
     'beta1': 0.9,
     'beta2': 0.95,
     'grad_clip': 1.0,
     'warmup_epochs': 2,
-    'max_epochs': 100,       # 20 epoch daha eğitim için 40'a çıkarıldı
+    'max_epochs': 100,       # Early stopping ile kontrol edilecek
     'eval_interval': 1,     # Her epoch'ta evaluate et
     'save_interval': 2,     # Her 2 epoch'ta kaydet
     'accumulation_steps': 8, # Gradient accumulation
@@ -103,7 +103,14 @@ TRAINING_CONFIG = {
     # Progress reporting
     'log_interval': 10,  # Her 100 batch'te progress logla
     'eval_steps': 500,   # Her 500 step'te hızlı evaluation yap
-    'checkpoint_steps': 10,  # Her 100 step'te checkpoint kaydet
+    'checkpoint_steps': 20,  # Her 100 step'te checkpoint kaydet
+    
+    # Overfitting'e karşı yeni parametreler
+    'early_stopping_patience': 5,  # 5 epoch boyunca iyileşme yoksa dur
+    'early_stopping_min_delta': 0.01,  # Minimum iyileşme miktarı
+    'label_smoothing': 0.1,  # Label smoothing - Overfitting'e karşı
+    'mixup_alpha': 0.2,      # Mixup data augmentation
+    'use_cosine_restarts': False,  # Cosine restarts kullan
     
     'vocab_size': 32000,  # SentencePiece için vocab size
 }
@@ -499,7 +506,25 @@ class Transformers(nn.Module):
         
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            # Label smoothing için smoothed cross entropy
+            label_smoothing = getattr(self.config, 'label_smoothing', 0.0)
+            if label_smoothing > 0.0:
+                log_probs = F.log_softmax(logits.view(-1, logits.size(-1)), dim=-1)
+                targets_flat = targets.view(-1)
+                
+                # One-hot encoding with label smoothing
+                num_classes = logits.size(-1)
+                smoothed_targets = torch.full_like(log_probs, label_smoothing / (num_classes - 1))
+                smoothed_targets.scatter_(1, targets_flat.unsqueeze(1), 1.0 - label_smoothing)
+                
+                # Ignore padding tokens
+                valid_mask = (targets_flat != -1)
+                if valid_mask.any():
+                    loss = -(smoothed_targets[valid_mask] * log_probs[valid_mask]).sum(dim=-1).mean()
+                else:
+                    loss = torch.tensor(0.0, device=logits.device)
+            else:
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         
         return logits, loss
     
@@ -585,6 +610,65 @@ def get_plateau_scheduler(optimizer, mode='min', factor=0.5, patience=3, verbose
         verbose=verbose,
         min_lr=1e-6
     )
+
+def mixup_data(x, y, alpha=1.0):
+    """Mixup data augmentation
+    
+    Args:
+        x: Input tensor (batch_size, seq_len)
+        y: Target tensor (batch_size, seq_len)
+        alpha: Mixup parameter
+    
+    Returns:
+        mixed_x, mixed_y, lambda_mix
+    """
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+    
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(x.device)
+    
+    # Embedding seviyesinde karıştırma yapmak daha iyi sonuç verir
+    # Bu yüzden token level'da değil, embedding level'da mixup yapacağız
+    mixed_y = lam * y + (1 - lam) * y[index]
+    
+    return x, mixed_y, lam, index
+
+class EarlyStopping:
+    """Early stopping utility class"""
+    
+    def __init__(self, patience=5, min_delta=0.01, restore_best_weights=True):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.restore_best_weights = restore_best_weights
+        self.best_loss = float('inf')
+        self.counter = 0
+        self.best_weights = None
+        
+    def __call__(self, val_loss, model):
+        """
+        Args:
+            val_loss: Current validation loss
+            model: Model to monitor
+            
+        Returns:
+            True if training should stop, False otherwise
+        """
+        if val_loss < self.best_loss - self.min_delta:
+            self.best_loss = val_loss
+            self.counter = 0
+            if self.restore_best_weights:
+                self.best_weights = model.state_dict().copy()
+        else:
+            self.counter += 1
+            
+        if self.counter >= self.patience:
+            if self.restore_best_weights and self.best_weights is not None:
+                model.load_state_dict(self.best_weights)
+            return True
+        return False
 
 @torch.no_grad()
 def calculate_perplexity(model, data_loader, device, device_type, max_batches=100):
@@ -765,9 +849,9 @@ def train(
             resume="allow" if resume_from_checkpoint else None
         )
     
-    # Load data
+    # Load data - Overfitting'e karşı daha fazla data
     print("Loading data...")
-    full_corpus = load_and_preprocess_data(max_samples=5000)
+    full_corpus = load_and_preprocess_data(max_samples=20000)  # 5000 -> 20000 (4x artırıldı)
     
     # Ensure tokenizer path has .model extension for SentencePiece
     if not tokenizer_path.endswith('.model'):
@@ -782,6 +866,9 @@ def train(
     
     # Update config with vocab size
     MODEL_CONFIG['vocab_size'] = tokenizer.vocab_size
+    
+    # Add label smoothing to model config
+    MODEL_CONFIG['label_smoothing'] = TRAINING_CONFIG.get('label_smoothing', 0.0)
     
     # Disable Flash Attention completely due to precision compatibility issues
     MODEL_CONFIG['use_flash_attention'] = False
@@ -978,8 +1065,18 @@ def train(
     if global_step == 0:
         global_step = 0  
     
+    # Early stopping
+    early_stopping = EarlyStopping(
+        patience=TRAINING_CONFIG.get('early_stopping_patience', 5),
+        min_delta=TRAINING_CONFIG.get('early_stopping_min_delta', 0.01),
+        restore_best_weights=True
+    )
+    
     # Training loop
     print("Starting training...")
+    print(f"Early stopping patience: {TRAINING_CONFIG.get('early_stopping_patience', 5)} epochs")
+    print(f"Label smoothing: {TRAINING_CONFIG.get('label_smoothing', 0.0)}")
+    print(f"Mixup alpha: {TRAINING_CONFIG.get('mixup_alpha', 0.0)}")
     
     for epoch in range(start_epoch, TRAINING_CONFIG['max_epochs']):
         print(f"\nEpoch {epoch + 1}/{TRAINING_CONFIG['max_epochs']}")
@@ -992,17 +1089,32 @@ def train(
         
         progress_bar = tqdm(train_loader, desc=f"Training Epoch {epoch + 1}")
         
-        # BATCH SKIPPING LOGIC REMOVED - it was causing progressively shorter epochs
-        # Each epoch should process ALL batches for consistent training
         
         for batch_idx, (inputs, targets) in enumerate(progress_bar):
             inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
             
-            # Gradient accumulation
-            # Note: Only enable autocast for CUDA; MPS has limited mixed precision support
-            with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
-                _, loss = model(inputs, targets)
-                loss = loss / TRAINING_CONFIG['accumulation_steps']
+            # Mixup data augmentation (sadece training sırasında)
+            mixup_alpha = TRAINING_CONFIG.get('mixup_alpha', 0.0)
+            if mixup_alpha > 0.0 and model.training:
+                # Convert targets to float for mixup
+                targets_float = targets.float()
+                inputs, mixed_targets, lam, index = mixup_data(inputs, targets_float, mixup_alpha)
+                
+                # Gradient accumulation with mixup
+                with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
+                    logits, _ = model(inputs)  # Don't calculate loss here
+                    
+                    # Manual mixup loss calculation
+                    criterion = nn.CrossEntropyLoss(ignore_index=-1, reduction='mean')
+                    loss1 = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
+                    loss2 = criterion(logits.view(-1, logits.size(-1)), targets[index].view(-1))
+                    loss = lam * loss1 + (1 - lam) * loss2
+                    loss = loss / TRAINING_CONFIG['accumulation_steps']
+            else:
+                # Normal training without mixup
+                with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
+                    _, loss = model(inputs, targets)
+                    loss = loss / TRAINING_CONFIG['accumulation_steps']
             
             if scaler:
                 scaler.scale(loss).backward()
@@ -1168,6 +1280,13 @@ def train(
                     checkpoint_path="checkpoints/best_model_100m.safetensors"
                 )
                 print(f"New best model saved! Val loss: {val_loss:.4f}, Perplexity: {perplexity:.2f}")
+            
+            # Early stopping check
+            if early_stopping(val_loss, model):
+                print(f"\nEarly stopping triggered after {epoch + 1} epochs!")
+                print(f"Best validation loss: {early_stopping.best_loss:.4f}")
+                print("Training stopped due to lack of improvement.")
+                break
         
         # Save checkpoint
         if (epoch + 1) % TRAINING_CONFIG['save_interval'] == 0:
@@ -1353,6 +1472,11 @@ def load_and_preprocess_data(max_samples=5000):
     dataset = load_dataset("musabg/wikipedia-tr-summarization", split='train')
     processed_texts = []
     
+    print(f"Dataset total data count: {len(dataset)}")
+    
+    if max_samples >= len(dataset):
+        max_samples = len(dataset)
+    
     for i in tqdm(range(min(len(dataset), max_samples)), desc="Preprocessing data"):
         text = clean_text(dataset[i]["text"])
         if len(text) > 50: 
@@ -1449,7 +1573,7 @@ if __name__ == "__main__":
     
     #model = train()
     #model = train(auto_resume=True)
-    #model = train(resume_from_checkpoint="checkpoints/checkpoint_epoch_2.safetensors")
+    model = train(resume_from_checkpoint="checkpoints/checkpoint_step_2.safetensors")
 
     '''
     model = train(
