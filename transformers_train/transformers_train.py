@@ -103,7 +103,7 @@ TRAINING_CONFIG = {
     # Progress reporting
     'log_interval': 10,  # Her 100 batch'te progress logla
     'eval_steps': 500,   # Her 500 step'te hızlı evaluation yap
-    'checkpoint_steps': 10,  # Her 100 step'te checkpoint kaydet
+    'checkpoint_steps': 1,  # Her 100 step'te checkpoint kaydet
     
     'vocab_size': 32000,  # SentencePiece için vocab size
 }
@@ -767,7 +767,7 @@ def train(
     
     # Load data
     print("Loading data...")
-    full_corpus = load_and_preprocess_data(max_samples=5000)  # Daha büyük dataset
+    full_corpus = load_and_preprocess_data(max_samples=100)  # Daha büyük dataset
     
     # Ensure tokenizer path has .model extension for SentencePiece
     if not tokenizer_path.endswith('.model'):
@@ -992,15 +992,10 @@ def train(
         
         progress_bar = tqdm(train_loader, desc=f"Training Epoch {epoch + 1}")
         
-        # Skip batches if resuming mid-epoch
-        steps_per_epoch = len(train_loader)
-        current_epoch_steps = global_step % steps_per_epoch if steps_per_epoch > 0 else 0
+        # BATCH SKIPPING LOGIC REMOVED - it was causing progressively shorter epochs
+        # Each epoch should process ALL batches for consistent training
         
         for batch_idx, (inputs, targets) in enumerate(progress_bar):
-            # Skip already processed steps in current epoch
-            if batch_idx < current_epoch_steps:
-                continue
-                
             inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
             
             # Gradient accumulation
@@ -1451,11 +1446,10 @@ def generate(text,
     return generated_text
 
 if __name__ == "__main__":
-    # Test all main functions
     
-    #model = train()
+    model = train()
     #model = train(auto_resume=True)
-    #model = train(resume_from_checkpoint="checkpoints/checkpoint_step_2.safetensors")
+    #model = train(resume_from_checkpoint="checkpoints/checkpoint_epoch_2.safetensors")
 
     '''
     model = train(
@@ -1466,4 +1460,4 @@ if __name__ == "__main__":
     '''
     
 
-    #generate("Türkiye'nin başkenti", model_path="checkpoints/checkpoint_step_1.safetensors")
+    #generate("Türkiye'nin başkenti", model_path="model/30-epoch/best_model_100m-30epoch.safetensors")
