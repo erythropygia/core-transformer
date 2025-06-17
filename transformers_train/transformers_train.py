@@ -103,7 +103,7 @@ TRAINING_CONFIG = {
     # Progress reporting
     'log_interval': 10,  # Her 100 batch'te progress logla
     'eval_steps': 500,   # Her 500 step'te hızlı evaluation yap
-    'checkpoint_steps': 1,  # Her 100 step'te checkpoint kaydet
+    'checkpoint_steps': 10,  # Her 100 step'te checkpoint kaydet
     
     'vocab_size': 32000,  # SentencePiece için vocab size
 }
@@ -767,7 +767,7 @@ def train(
     
     # Load data
     print("Loading data...")
-    full_corpus = load_and_preprocess_data(max_samples=100)  # Daha büyük dataset
+    full_corpus = load_and_preprocess_data(max_samples=5000)
     
     # Ensure tokenizer path has .model extension for SentencePiece
     if not tokenizer_path.endswith('.model'):
@@ -1447,7 +1447,7 @@ def generate(text,
 
 if __name__ == "__main__":
     
-    model = train()
+    #model = train()
     #model = train(auto_resume=True)
     #model = train(resume_from_checkpoint="checkpoints/checkpoint_epoch_2.safetensors")
 
