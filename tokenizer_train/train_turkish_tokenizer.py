@@ -31,14 +31,14 @@ class TurkishTokenizerTrainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
         
-        # Türkçe için optimize edilmiş SentencePiece parametreleri
+        # 🇹🇷 Optimized SentencePiece parameters for Turkish
         self.sp_params = {
             'model_type': model_type,
             'vocab_size': vocab_size,
             'character_coverage': character_coverage,
-            'normalization_rule_name': 'nfkc',  # Türkçe karakterler için
+            'normalization_rule_name': 'nfkc',  # Critical for Turkish characters
             'remove_extra_whitespaces': True,
-            'split_by_unicode_script': True,    # Türkçe morfoloji için kritik
+            'split_by_unicode_script': True,    # Critical for Turkish morphology
             'split_by_whitespace': True,
             'split_by_number': True,
             'split_digits': True,
@@ -46,7 +46,7 @@ class TurkishTokenizerTrainer:
             'allow_whitespace_only_pieces': True,
             'max_sentence_length': 8192,
             'shuffle_input_sentence': True,
-            'input_sentence_size': 10000000,    # 10M cümle limit
+            'input_sentence_size': 10000000,    # 10M sentence limit
             'seed_sentencepiece_size': 1000000,
             'shrinking_factor': 0.75,
             'num_threads': os.cpu_count() or 4,
@@ -59,11 +59,17 @@ class TurkishTokenizerTrainer:
         }
         
         self.special_tokens = [
+            # === Document Structure (4 tokens) ===
+            '<|beginoftext|>',      # Document/text beginning marker
+            '<|endoftext|>',        # Document/text end marker
+            '<|startoftext|>',      # Alternative start marker
+            '<newline>',            # Explicit newline token
+            
             # === Core Functionality (5 tokens) ===
             '<mask>',               # Masked Language Modeling
             '<turkish>',            # Language identifier
-            '<instruction>',        # Instruction tuning başlangıç
-            '</instruction>',       # Instruction tuning bitiş
+            '<instruction>',        # Instruction tuning start
+            '</instruction>',       # Instruction tuning end
             '<context>',           # Context marker
             
             # === Chat & Dialog (4 tokens) ===
@@ -72,16 +78,20 @@ class TurkishTokenizerTrainer:
             '<|assistant|>',       # Assistant response
             '<|end|>',             # Turn end marker
             
-            # === Safety & Control (2 tokens) ===
+            # === Safety & Control (3 tokens) ===
             '<safe>',              # Safe content marker
             '<unsafe>',            # Unsafe content marker
+            '<filtered>',          # Filtered content marker
             
-            # === Future Reserve (5 tokens) ===
-            '<reserved1>',         # Gelecek özellikler için
-            '<reserved2>',         # Function calling, tools vs.
+            # === Task Specific (3 tokens) ===
+            '<translate>',         # Translation task marker
+            '<summarize>',         # Summarization task marker
+            '<classify>',          # Classification task marker
+            
+            # === Future Reserve (3 tokens) ===
+            '<reserved1>',         # Future features
+            '<reserved2>',         # Function calling, tools etc.
             '<reserved3>',         # Multi-modal extensions
-            '<reserved4>',         # Task-specific needs
-            '<reserved5>',         # Emergency reserve
         ]
 
     def get_corpus_file(self) -> str:
@@ -110,21 +120,20 @@ class TurkishTokenizerTrainer:
                     total_lines += 1
                     line = line.strip()
                     
-                    # Katı filtreleme - 130M model için kaliteli veri
                     if self._is_high_quality_text(line):
                         outfile.write(line + '\n')
                         valid_lines += 1
                     
                     if total_lines % 100000 == 0:
-                        logger.info(f"  {total_lines:,} lines processed, {valid_lines:,} valid lines")
+                        logger.info(f"{total_lines:,} lines processed, {valid_lines:,} valid lines")
                         
-                    # Memory efficiency için batch processing
+                    # Memory efficiency for batch processing
                     if total_lines % 1000000 == 0:
-                        logger.info(f"  {total_lines//1000000}M lines completed")
+                        logger.info(f"{total_lines//1000000}M lines completed")
         
         retention_rate = (valid_lines / total_lines) * 100
         logger.info(f"Preprocessing completed:")
-        logger.info(f"   {valid_lines:,}/{total_lines:,} lines retained ({retention_rate:.1f}%)")
+        logger.info(f"{valid_lines:,}/{total_lines:,} lines retained ({retention_rate:.1f}%)")
         return str(processed_file)
 
     def _is_high_quality_text(self, text: str) -> bool:
@@ -154,9 +163,9 @@ class TurkishTokenizerTrainer:
         if any(char * 4 in text for char in set(text)):
             return False
         
-        # Büyük harf yoğunluğu (SPAM filtreleme)
+        # Uppercase ratio check (SPAM filtering)
         upper_ratio = sum(c.isupper() for c in text) / len(text)
-        if upper_ratio > 0.5:  # %50'den fazla büyük harf
+        if upper_ratio > 0.5:  # More than 50% uppercase
             return False
             
         return True
@@ -176,11 +185,11 @@ class TurkishTokenizerTrainer:
         
         # Critical parameters
         logger.info("Training parameters:")
-        logger.info(f"  Vocabulary size: {sp_params['vocab_size']:,}")
-        logger.info(f"  Model type: {sp_params['model_type'].upper()}")
-        logger.info(f"  Character coverage: {sp_params['character_coverage']}")
-        logger.info(f"  Special token count: {len(self.special_tokens)}")
-        logger.info(f"  Thread count: {sp_params['num_threads']}")
+        logger.info(f"Vocabulary size: {sp_params['vocab_size']:,}")
+        logger.info(f"Model type: {sp_params['model_type'].upper()}")
+        logger.info(f"Character coverage: {sp_params['character_coverage']}")
+        logger.info(f"Special token count: {len(self.special_tokens)}")
+        logger.info(f"Thread count: {sp_params['num_threads']}")
         
         try:
             logger.info("SentencePiece training starting...")
@@ -208,7 +217,7 @@ class TurkishTokenizerTrainer:
                     'training_time': training_time
                 }
             else:
-                raise FileNotFoundError("Model dosyaları oluşturulamadı")
+                raise FileNotFoundError("Model files could not be created")
                 
         except Exception as e:
             logger.error(f"Tokenizer training failed: {e}")
@@ -220,7 +229,7 @@ class TurkishTokenizerTrainer:
             sp.load(model_file)
             
             logger.info("Tokenizer quality analysis:")
-            logger.info(f"  Total vocabulary: {sp.vocab_size():,}")
+            logger.info(f"Total vocabulary: {sp.vocab_size():,}")
             
             # Check special tokens
             special_count = 0
@@ -231,7 +240,7 @@ class TurkishTokenizerTrainer:
                     special_count += 1
                     special_ids.append(f"{token}:{token_id}")
             
-            logger.info(f"  Special tokens: {special_count}/{len(self.special_tokens)} successful")
+            logger.info(f"Special tokens: {special_count}/{len(self.special_tokens)} successful")
             
             # Check core tokens
             core_tokens = {
@@ -241,7 +250,7 @@ class TurkishTokenizerTrainer:
                 '<pad>': sp.pad_id()
             }
             
-            logger.info("  Core tokens:")
+            logger.info("Core tokens:")
             for token, token_id in core_tokens.items():
                 logger.info(f"    {token}: ID {token_id}")
             
@@ -256,21 +265,21 @@ class TurkishTokenizerTrainer:
             for sentence in test_sentences:
                 tokens = sp.encode(sentence, out_type=str)
                 token_count = len(tokens)
-                logger.info(f"     '{sentence}' -> {token_count} token")
+                logger.info(f"     '{sentence}' -> {token_count} tokens")
             
-            # Efficiency score (ortalama token/karakter oranı)
+            # Efficiency score (average chars per token)
             total_chars = sum(len(s) for s in test_sentences)
             total_tokens = sum(len(sp.encode(s)) for s in test_sentences)
             efficiency = total_chars / total_tokens if total_tokens > 0 else 0
             
-            logger.info(f"  Encoding efficiency: {efficiency:.2f} characters/token")
+            logger.info(f"Encoding efficiency: {efficiency:.2f} characters/token")
             
             if efficiency >= 3.0:
-                logger.info("  Excellent efficiency for Turkish!")
+                logger.info("Excellent efficiency for Turkish!")
             elif efficiency >= 2.5:
-                logger.info("  Good efficiency")
+                logger.info("Good efficiency")
             else:
-                logger.info("  Low efficiency - consider retraining")
+                logger.info("Low efficiency - consider retraining")
                 
         except Exception as e:
             logger.warning(f"Quality analysis failed: {e}")
@@ -309,24 +318,24 @@ class TurkishTokenizerTrainer:
         return str(config_file)
 
     def run_training(self) -> Dict[str, str]:
-        logger.info("Tokenizer training starting...")
+        logger.info("Tokenizer Training Pipeline")
         logger.info("=" * 60)
         
         try:
             # 1. Check corpus file
-            logger.info("1. Corpus file checking...")
+            logger.info("Corpus file checking...")
             corpus_file = self.get_corpus_file()
             
             # 2. Preprocess corpus
-            logger.info("2. High quality corpus preparing...")
+            logger.info("High quality corpus preparing...")
             processed_corpus = self.preprocess_corpus(corpus_file)
             
             # 3. Train tokenizer
-            logger.info("3. Tokenizer training...")
+            logger.info("Tokenizer training...")
             result = self.train_tokenizer(processed_corpus)
             
             # 4. Save configuration
-            logger.info("4. Configuration saving...")
+            logger.info("Configuration saving...")
             config_file = self.save_config(result)
             result['config'] = config_file
             
@@ -337,7 +346,7 @@ class TurkishTokenizerTrainer:
             logger.info(f"Vocabulary file: {result['vocab']}")  
             logger.info(f"Configuration: {result['config']}")
             logger.info(f"Total training time: {result['training_time']:.2f}s")
-            logger.info("5 reserved tokens for future extensions!")
+            logger.info("3 reserved tokens for future extensions!")
             
             return result
             
