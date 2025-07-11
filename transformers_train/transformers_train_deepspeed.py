@@ -805,7 +805,7 @@ def train(
     resume_from_checkpoint=None,
     auto_resume=True,
     use_wandb=True,
-    project_name="turkish-transformer-130m",
+    project_name="turkish-transformer-100m",
     pretrained_model_path=None,
     fresh_epochs=None
 ):
@@ -1505,7 +1505,7 @@ def load_and_preprocess_data(max_samples=150000):
     return processed_texts
 
 def generate(text, 
-             model_path="checkpoints/best_model_130m_rtx3050.safetensors",
+             model_path="checkpoints/best_model_100m.safetensors",
              tokenizer_path="turkish_tokenizer/turkish_tokenizer.model",
              max_new_tokens=100,
              temperature=0.8,
