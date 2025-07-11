@@ -93,7 +93,7 @@ MODEL_CONFIG = {
 }
 
 TRAINING_CONFIG = {
-    'batch_size': 4,        
+    'batch_size': 2,        # RTX 3050 için düşürüldü - DeepSpeed config ile senkronize
     'learning_rate': 6e-4,  
     'weight_decay': 0.1,   
     'beta1': 0.9,
@@ -103,7 +103,7 @@ TRAINING_CONFIG = {
     'max_epochs': 50,       
     'eval_interval': 2,     
     'save_interval': 5,     
-    'accumulation_steps': 32, 
+    'accumulation_steps': 64,  # DeepSpeed config: 128 total batch / 2 micro batch = 64 steps 
     'use_wandb': True,
     'compile_model': False,
     'scheduler_type': 'cosine_with_warmup',
@@ -134,7 +134,7 @@ TRAINING_CONFIG = {
     
     # DeepSpeed RTX 3050 Optimization
     'use_deepspeed': True,          # DeepSpeed kullan (True/False)
-    'deepspeed_config_path': None,   # Config file path (optional)
+    'deepspeed_config_path': 'config/simple_deepspeed.json',   # Config file path
     'zero_stage': 2,                 # ZeRO Stage 2 (RTX 3050 için optimal)
     'cpu_offload': True,             # CPU offload aktif
     'nvme_offload': False,           # NVMe offload (SSD gerekli)
@@ -1022,6 +1022,10 @@ def train(
     print(f"Early stopping patience: {TRAINING_CONFIG['early_stopping_patience']}")
     print("="*80)
     
+    # Create necessary directories
+    os.makedirs("checkpoints", exist_ok=True)
+    print("📁 Checkpoint directory created: checkpoints/")
+    
     for epoch in range(start_epoch, TRAINING_CONFIG['max_epochs']):
         print(f"\nEpoch {epoch + 1}/{TRAINING_CONFIG['max_epochs']}")
         print(f"Memory before epoch: {get_memory_usage()}")
@@ -1494,13 +1498,31 @@ def generate(text,
     return generated_text
 
 if __name__ == "__main__":
-
-    model = train()
-    
-    # Örnek kullanımlar:
-    # model = train(auto_resume=True)  # Resume from latest checkpoint
-    # model = train(resume_from_checkpoint="checkpoints/checkpoint_step_1000.safetensors")
-    # model = train(pretrained_model_path="checkpoints/best_model_130m_rtx3050.safetensors", fresh_epochs=10)
-    
-    # Generation example:
-    # generate("Türkiye'nin başkenti", model_path="checkpoints/best_model_130m_rtx3050.safetensors")
+    try:
+        model = train()
+        
+        # Örnek kullanımlar:
+        # model = train(auto_resume=True)  # Resume from latest checkpoint
+        # model = train(resume_from_checkpoint="checkpoints/checkpoint_step_1000.safetensors")
+        # model = train(pretrained_model_path="checkpoints/best_model_130m_rtx3050.safetensors", fresh_epochs=10)
+        
+        # Generation example:
+        # generate("Türkiye'nin başkenti", model_path="checkpoints/best_model_130m_rtx3050.safetensors")
+        
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user")
+    except Exception as e:
+        print(f"\nTraining failed with error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Proper cleanup for DeepSpeed/PyTorch
+        try:
+            if torch.distributed.is_initialized():
+                torch.distributed.destroy_process_group()
+                print("Process group destroyed successfully")
+        except:
+            pass
+        
+        cleanup_memory()
+        print("Training session ended")
