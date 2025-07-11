@@ -360,15 +360,13 @@ def main():
     
     args = parser.parse_args()
     
-    # Trainer'ı başlat
     trainer = TurkishTokenizerTrainer(
         vocab_size=args.vocab_size,
         model_type=args.model_type,
         character_coverage=args.coverage,
         output_dir=args.output_dir
     )
-    
-    # Eğitimi çalıştır
+
     trainer.run_training()
 
 if __name__ == "__main__":
