@@ -120,7 +120,7 @@ TRAINING_CONFIG = {
     # Progress reporting
     'log_interval': 50,     
     'eval_steps': 1000,     
-    'checkpoint_steps': 500, 
+    'checkpoint_steps': 500,  
     
     # Regularization
     'early_stopping_patience': 8,  
@@ -813,6 +813,11 @@ def train(
     print("Transformer train")
     print("="*80)
     
+    # Initialize training state
+    global_step = 0
+    start_epoch = 0
+    best_val_loss = float('inf')
+    
     # RTX 3050 CUDA Memory Optimization
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
     
@@ -902,7 +907,9 @@ def train(
     train_dataset = Dataset(train_tokens, MODEL_CONFIG['block_size'])
     val_dataset = Dataset(val_tokens, MODEL_CONFIG['block_size'])
     
-
+    # global_step already initialized at function start
+    
+    # Create basic DataLoader first (will be recreated after resume)
     train_loader = DataLoader(
         train_dataset, 
         batch_size=TRAINING_CONFIG['batch_size'],
@@ -1010,34 +1017,61 @@ def train(
         scaler = GradScaler(device_type) if device_type == 'cuda' else None
         print(f"Mixed precision: {'OK' if scaler else 'NO'}")
     
-    # Resume logic (skip for pretrained)
-    start_epoch = 0
-    best_val_loss = float('inf')
-    global_step = 0
-    
+        # Resume logic (skip for pretrained)
     if not pretrained_model_path:
         if auto_resume and not resume_from_checkpoint:
             resume_from_checkpoint = find_latest_checkpoint()
         
         if resume_from_checkpoint and os.path.exists(resume_from_checkpoint):
             try:
-                print(f"\n📤 Resuming from: {resume_from_checkpoint}")
-                debug_resume_info(resume_from_checkpoint)
+                print(f"\nResuming from: {resume_from_checkpoint}")
                 
                 resume_info = load_checkpoint(
                     resume_from_checkpoint, model, optimizer, scheduler, scaler, device
                 )
-                start_epoch = resume_info['epoch']
+                loaded_epoch = resume_info['epoch']
                 global_step = resume_info['global_step']
                 best_val_loss = resume_info['best_val_loss']
                 
+                # CRITICAL: Global step'e göre doğru epoch'u hesapla
+                estimated_steps_per_epoch = len(train_loader) // TRAINING_CONFIG['accumulation_steps']
+                calculated_epoch = global_step // estimated_steps_per_epoch
+                
+                print(f"RESUME ANALYSIS:")
+                print(f"  Loaded epoch: {loaded_epoch}")
+                print(f"  Global step: {global_step}")
+                print(f"  Steps per epoch: {estimated_steps_per_epoch}")
+                print(f"  Calculated epoch from global_step: {calculated_epoch}")
+                
+                start_epoch = calculated_epoch
+                
+                print(f"  >>> Using calculated epoch: {start_epoch}")
+                print(f"  >>> This epoch has completed {global_step % estimated_steps_per_epoch} steps.")
+                
                 print(f"Resume successful: Epoch {start_epoch}, Step {global_step}, Best Val Loss: {best_val_loss:.4f}")
+                print(f"Estimated steps per epoch: {estimated_steps_per_epoch}")
+                
+                # Recreate DataLoader with proper seed for resume
+                print(f"Recreating DataLoader with seed based on global_step: {global_step}")
+                train_loader = DataLoader(
+                    train_dataset, 
+                    batch_size=TRAINING_CONFIG['batch_size'],
+                    shuffle=True,
+                    num_workers=TRAINING_CONFIG['dataloader_num_workers'],
+                    pin_memory=TRAINING_CONFIG['pin_memory'],
+                    prefetch_factor=TRAINING_CONFIG['prefetch_factor'],
+                    drop_last=True,
+                    generator=torch.Generator().manual_seed(42 + global_step)
+                )
+                
             except Exception as e:
-                print(f"❌ Resume failed: {e}")
+                print(f"Resume failed: {e}")
                 print("Starting fresh training instead...")
                 start_epoch = 0
                 global_step = 0
                 best_val_loss = float('inf')
+    
+    # Training state is already initialized at function start
     
     # Early stopping
     early_stopping = EarlyStopping(
@@ -1060,7 +1094,7 @@ def train(
     for epoch in range(start_epoch, TRAINING_CONFIG['max_epochs']):
         print(f"\nEpoch {epoch + 1}/{TRAINING_CONFIG['max_epochs']}")
         print(f"Memory before epoch: {get_memory_usage()}")
-        print(f"Starting from global step: {global_step}")
+        print(f"Global step: {global_step}")
         
         # Training
         model.train()
@@ -1069,19 +1103,15 @@ def train(
         
         progress_bar = tqdm(train_loader, desc=f"Training Epoch {epoch + 1}")
         
-        # Calculate how many batches to skip if resuming mid-epoch
-        batches_per_epoch = len(train_loader)
-        expected_step_at_epoch_start = epoch * (batches_per_epoch // TRAINING_CONFIG['accumulation_steps'])
-        batches_to_skip = max(0, (global_step - expected_step_at_epoch_start) * TRAINING_CONFIG['accumulation_steps'])
+
+        print(f"Resume info: Starting from saved epoch {epoch + 1}, global step {global_step}")
+        estimated_steps_per_epoch = len(train_loader) // TRAINING_CONFIG['accumulation_steps']
+        expected_epoch = global_step // estimated_steps_per_epoch
+        print(f"  Estimated steps per epoch: {estimated_steps_per_epoch}")
+        print(f"  Expected epoch from global_step: {expected_epoch}")
         
-        if batches_to_skip > 0 and batches_to_skip < batches_per_epoch:
-            print(f"Resuming mid-epoch: skipping {batches_to_skip} batches")
-            progress_bar.set_description(f"Training Epoch {epoch + 1} (resuming from step {global_step})")
-        
+        batch_counter = 0
         for batch_idx, (inputs, targets) in enumerate(progress_bar):
-            # Skip batches if resuming mid-epoch
-            if batches_to_skip > 0 and batch_idx < batches_to_skip:
-                continue
             inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
             
             # Forward pass with mixed precision
@@ -1109,6 +1139,7 @@ def train(
             
             total_train_loss += batch_loss
             num_train_batches += 1
+            batch_counter += 1
             
             # Update progress
             if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
@@ -1120,7 +1151,8 @@ def train(
                 'loss': f"{batch_loss:.4f}",
                 'lr': f"{current_lr:.2e}",
                 'mem': get_memory_usage_safe(),
-                'step': global_step
+                'step': global_step,
+                'processed': batch_counter
             })
             
             # Optimizer step
@@ -1142,65 +1174,64 @@ def train(
                     scheduler.step()
                     optimizer.zero_grad()
                 
-                # Only increment global_step if we're not skipping batches
-                if not (batches_to_skip > 0 and batch_idx < batches_to_skip):
-                    global_step += 1
+                # Increment global_step for actual training steps
+                global_step += 1
+                
+                # Logging
+                if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb:
+                    wandb.log({
+                        'train_loss_step': batch_loss,
+                        'learning_rate': current_lr,
+                        'global_step': global_step,
+                        'epoch': epoch + 1
+                    })
+                
+                # Quick evaluation
+                if global_step % TRAINING_CONFIG['eval_steps'] == 0 and global_step > 0:
+                    print(f"\nQuick eval at step {global_step}")
+                    model.eval()
+                    quick_val_loss = 0
+                    quick_batches = 0
                     
-                    # Logging
-                    if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb:
+                    with torch.no_grad():
+                        for val_batch_idx, (val_inputs, val_targets) in enumerate(val_loader):
+                            if val_batch_idx >= 10:  # Quick eval
+                                break
+                            val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+                            
+                            with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
+                                _, val_loss = model(val_inputs, val_targets)
+                            
+                            quick_val_loss += val_loss.item()
+                            quick_batches += 1
+                    
+                    avg_quick_val_loss = quick_val_loss / quick_batches if quick_batches > 0 else float('inf')
+                    print(f"Step {global_step}: Train: {total_train_loss/num_train_batches:.4f}, Quick Val: {avg_quick_val_loss:.4f}")
+                    
+                    if use_wandb:
                         wandb.log({
-                            'train_loss_step': batch_loss,
-                            'learning_rate': current_lr,
-                            'global_step': global_step,
-                            'epoch': epoch + 1
+                            'quick_val_loss': avg_quick_val_loss,
+                            'train_loss_avg': total_train_loss/num_train_batches,
+                            'global_step': global_step
                         })
                     
-                    # Quick evaluation
-                    if global_step % TRAINING_CONFIG['eval_steps'] == 0 and global_step > 0:
-                        print(f"\nQuick eval at step {global_step}")
-                        model.eval()
-                        quick_val_loss = 0
-                        quick_batches = 0
-                        
-                        with torch.no_grad():
-                            for val_batch_idx, (val_inputs, val_targets) in enumerate(val_loader):
-                                if val_batch_idx >= 10:  # Quick eval
-                                    break
-                                val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
-                                
-                                with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
-                                    _, val_loss = model(val_inputs, val_targets)
-                                
-                                quick_val_loss += val_loss.item()
-                                quick_batches += 1
-                        
-                        avg_quick_val_loss = quick_val_loss / quick_batches if quick_batches > 0 else float('inf')
-                        print(f"Step {global_step}: Train: {total_train_loss/num_train_batches:.4f}, Quick Val: {avg_quick_val_loss:.4f}")
-                        
-                        if use_wandb:
-                            wandb.log({
-                                'quick_val_loss': avg_quick_val_loss,
-                                'train_loss_avg': total_train_loss/num_train_batches,
-                                'global_step': global_step
-                            })
-                        
-                        model.train()
-                        cleanup_memory()
-                    
-                    # Checkpoint saving
-                    if global_step % TRAINING_CONFIG['checkpoint_steps'] == 0 and global_step > 0:
-                        checkpoint_path = f"checkpoints/checkpoint_step_{global_step}.safetensors"
-                        save_checkpoint(
-                            model, optimizer, scheduler, scaler, epoch, global_step,
-                            best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
-                            checkpoint_path=checkpoint_path
-                        )
-                
-                if global_step % 10 == 0: 
+                    model.train()
                     cleanup_memory()
-                    
-                if batch_idx % TRAINING_CONFIG['accumulation_steps'] == 0:
-                    torch.cuda.empty_cache()
+                
+                # Checkpoint saving
+                if global_step % TRAINING_CONFIG['checkpoint_steps'] == 0 and global_step > 0:
+                    checkpoint_path = f"checkpoints/checkpoint_step_{global_step}.safetensors"
+                    save_checkpoint(
+                        model, optimizer, scheduler, scaler, epoch, global_step,
+                        best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
+                        checkpoint_path=checkpoint_path
+                    )
+            
+            if global_step % 10 == 0: 
+                cleanup_memory()
+                
+            if batch_idx % TRAINING_CONFIG['accumulation_steps'] == 0:
+                torch.cuda.empty_cache()
         
         avg_train_loss = total_train_loss / num_train_batches
         print(f"\nEpoch {epoch + 1} completed: Train Loss: {avg_train_loss:.4f}")
@@ -1447,34 +1478,6 @@ def find_latest_checkpoint(checkpoint_dir="checkpoints"):
     print(f"Latest checkpoint found: {latest_checkpoint}")
     return latest_checkpoint
 
-def debug_resume_info(checkpoint_path):
-    """Debug resume information"""
-    if not os.path.exists(checkpoint_path):
-        print(f"Checkpoint not found: {checkpoint_path}")
-        return None
-    
-    try:
-        from safetensors import safe_open
-        with safe_open(checkpoint_path, framework="pt") as f:
-            metadata = f.metadata()
-        
-        print(f"Checkpoint Debug Info:")
-        print(f"  Path: {checkpoint_path}")
-        print(f"  Epoch: {metadata.get('epoch', 'N/A')}")
-        print(f"  Global Step: {metadata.get('global_step', 'N/A')}")
-        print(f"  Best Val Loss: {metadata.get('best_val_loss', 'N/A')}")
-        print(f"  Model Type: {metadata.get('model_type', 'N/A')}")
-        print(f"  DeepSpeed: {metadata.get('deepspeed', 'N/A')}")
-        
-        return {
-            'epoch': int(metadata.get('epoch', '0')),
-            'global_step': int(metadata.get('global_step', '0')),
-            'best_val_loss': float(metadata.get('best_val_loss', 'inf')),
-        }
-    except Exception as e:
-        print(f"Error reading checkpoint metadata: {e}")
-        return None
-
 def load_and_preprocess_data(max_samples=150000):
     def clean_text(text: str) -> str:
         text = unicodedata.normalize("NFKC", text)
@@ -1604,7 +1607,7 @@ if __name__ == "__main__":
         #model = train()
         
         # Örnek kullanımlar:
-          model = train(auto_resume=True)  # Resume from latest checkpoint
+        model = train(auto_resume=True)  # Resume from latest checkpoint
         # model = train(resume_from_checkpoint="checkpoints/checkpoint_step_1000.safetensors")
         # model = train(pretrained_model_path="checkpoints/best_model_130m_rtx3050.safetensors", fresh_epochs=10)
                 
