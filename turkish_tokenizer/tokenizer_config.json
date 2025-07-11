@@ -1,0 +1,50 @@
+{
+  "model_info": {
+    "name": "Turkish SentencePiece Tokenizer",
+    "version": "1.0",
+    "language": "Turkish",
+    "created_at": "2025-07-11 15:48:48"
+  },
+  "parameters": {
+    "vocab_size": 32000,
+    "model_type": "bpe",
+    "character_coverage": 0.9995
+  },
+  "special_tokens": {
+    "count": 22,
+    "tokens": [
+      "<|beginoftext|>",
+      "<|endoftext|>",
+      "<|startoftext|>",
+      "<newline>",
+      "<mask>",
+      "<turkish>",
+      "<instruction>",
+      "</instruction>",
+      "<context>",
+      "<|system|>",
+      "<|user|>",
+      "<|assistant|>",
+      "<|end|>",
+      "<safe>",
+      "<unsafe>",
+      "<filtered>",
+      "<translate>",
+      "<summarize>",
+      "<classify>",
+      "<reserved1>",
+      "<reserved2>",
+      "<reserved3>"
+    ]
+  },
+  "files": {
+    "model": "turkish_tokenizer/turkish_tokenizer.model",
+    "vocab": "turkish_tokenizer/turkish_tokenizer.vocab",
+    "training_time": 377.2713837623596
+  },
+  "usage": {
+    "loading": "sp.load('turkish_tokenizer/turkish_tokenizer.model')",
+    "encoding": "tokens = sp.encode('metin', out_type=str)",
+    "decoding": "text = sp.decode(tokens)"
+  }
+}
