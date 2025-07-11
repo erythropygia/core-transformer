@@ -93,7 +93,7 @@ MODEL_CONFIG = {
 }
 
 TRAINING_CONFIG = {
-    'batch_size': 2,        # RTX 3050 için düşürüldü - DeepSpeed config ile senkronize
+    'batch_size': 2,        # RTX 3050 için optimize (8->2)
     'learning_rate': 6e-4,  
     'weight_decay': 0.1,   
     'beta1': 0.9,
@@ -103,7 +103,7 @@ TRAINING_CONFIG = {
     'max_epochs': 50,       
     'eval_interval': 2,     
     'save_interval': 5,     
-    'accumulation_steps': 64,  # DeepSpeed config: 128 total batch / 2 micro batch = 64 steps 
+    'accumulation_steps': 16,  # RTX 3050 için düşük (2 * 16 = 32 effective batch) 
     'use_wandb': True,
     'compile_model': False,
     'scheduler_type': 'cosine_with_warmup',
@@ -133,8 +133,8 @@ TRAINING_CONFIG = {
     'max_data_samples': 150000, 
     
     # DeepSpeed RTX 3050 Optimization
-    'use_deepspeed': True,          # DeepSpeed kullan (True/False)
-    'deepspeed_config_path': 'config/simple_deepspeed.json',   # Config file path
+    'use_deepspeed': False,          # DeepSpeed kullan (True/False)
+    'deepspeed_config_path': 'transformers_train/config/simple_deepspeed.json',   # Config file path
     'zero_stage': 2,                 # ZeRO Stage 2 (RTX 3050 için optimal)
     'cpu_offload': True,             # CPU offload aktif
     'nvme_offload': False,           # NVMe offload (SSD gerekli)
@@ -581,7 +581,19 @@ class Transformer(nn.Module):
 def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()  # GPU işlemlerini bekle
     gc.collect()
+    
+def get_memory_usage_safe():
+    if torch.cuda.is_available():
+        try:
+            allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+            reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            return f"GPU: {allocated:.2f}GB/{total:.1f}GB (Reserved: {reserved:.2f}GB)"
+        except:
+            return "GPU: Memory calculation error"
+    return "CPU Mode"
 
 def get_memory_usage():
     if torch.cuda.is_available():
@@ -801,11 +813,18 @@ def train(
     print("Transformer train")
     print("="*80)
     
+    # RTX 3050 CUDA Memory Optimization
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    
     if torch.cuda.is_available():
         device = torch.device('cuda')
         device_type = "cuda"
         print(f"Device: {device} ({torch.cuda.get_device_name()})")
         print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
+        
+        torch.cuda.empty_cache()
+        cleanup_memory()
+        print("Memory cleaned")
     else:
         device = torch.device('cpu')
         device_type = "cpu"
@@ -1024,7 +1043,7 @@ def train(
     
     # Create necessary directories
     os.makedirs("checkpoints", exist_ok=True)
-    print("📁 Checkpoint directory created: checkpoints/")
+    print("Checkpoint directory created: checkpoints/")
     
     for epoch in range(start_epoch, TRAINING_CONFIG['max_epochs']):
         print(f"\nEpoch {epoch + 1}/{TRAINING_CONFIG['max_epochs']}")
@@ -1075,7 +1094,7 @@ def train(
             progress_bar.set_postfix({
                 'loss': f"{batch_loss:.4f}",
                 'lr': f"{current_lr:.2e}",
-                'mem': get_memory_usage(),
+                'mem': get_memory_usage_safe(),
                 'step': global_step
             })
             
@@ -1109,9 +1128,11 @@ def train(
                         'epoch': epoch + 1
                     })
                 
-                # Memory cleanup
-                if global_step % 100 == 0:
+                if global_step % 10 == 0: 
                     cleanup_memory()
+                    
+                if batch_idx % TRAINING_CONFIG['accumulation_steps'] == 0:
+                    torch.cuda.empty_cache()
                 
                 # Quick evaluation
                 if global_step % TRAINING_CONFIG['eval_steps'] == 0 and global_step > 0:
