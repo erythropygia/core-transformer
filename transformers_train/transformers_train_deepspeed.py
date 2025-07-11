@@ -1020,13 +1020,24 @@ def train(
             resume_from_checkpoint = find_latest_checkpoint()
         
         if resume_from_checkpoint and os.path.exists(resume_from_checkpoint):
-            print(f"\n📤 Resuming from: {resume_from_checkpoint}")
-            resume_info = load_checkpoint(
-                resume_from_checkpoint, model, optimizer, scheduler, scaler, device
-            )
-            start_epoch = resume_info['epoch']
-            global_step = resume_info['global_step']
-            best_val_loss = resume_info['best_val_loss']
+            try:
+                print(f"\n📤 Resuming from: {resume_from_checkpoint}")
+                debug_resume_info(resume_from_checkpoint)
+                
+                resume_info = load_checkpoint(
+                    resume_from_checkpoint, model, optimizer, scheduler, scaler, device
+                )
+                start_epoch = resume_info['epoch']
+                global_step = resume_info['global_step']
+                best_val_loss = resume_info['best_val_loss']
+                
+                print(f"Resume successful: Epoch {start_epoch}, Step {global_step}, Best Val Loss: {best_val_loss:.4f}")
+            except Exception as e:
+                print(f"❌ Resume failed: {e}")
+                print("Starting fresh training instead...")
+                start_epoch = 0
+                global_step = 0
+                best_val_loss = float('inf')
     
     # Early stopping
     early_stopping = EarlyStopping(
@@ -1039,6 +1050,7 @@ def train(
     print(f"\nStarting training from epoch {start_epoch + 1}")
     print(f"Max epochs: {TRAINING_CONFIG['max_epochs']}")
     print(f"Early stopping patience: {TRAINING_CONFIG['early_stopping_patience']}")
+    print(f"Global step: {global_step}")
     print("="*80)
     
     # Create necessary directories
@@ -1048,6 +1060,7 @@ def train(
     for epoch in range(start_epoch, TRAINING_CONFIG['max_epochs']):
         print(f"\nEpoch {epoch + 1}/{TRAINING_CONFIG['max_epochs']}")
         print(f"Memory before epoch: {get_memory_usage()}")
+        print(f"Starting from global step: {global_step}")
         
         # Training
         model.train()
@@ -1056,7 +1069,19 @@ def train(
         
         progress_bar = tqdm(train_loader, desc=f"Training Epoch {epoch + 1}")
         
+        # Calculate how many batches to skip if resuming mid-epoch
+        batches_per_epoch = len(train_loader)
+        expected_step_at_epoch_start = epoch * (batches_per_epoch // TRAINING_CONFIG['accumulation_steps'])
+        batches_to_skip = max(0, (global_step - expected_step_at_epoch_start) * TRAINING_CONFIG['accumulation_steps'])
+        
+        if batches_to_skip > 0 and batches_to_skip < batches_per_epoch:
+            print(f"Resuming mid-epoch: skipping {batches_to_skip} batches")
+            progress_bar.set_description(f"Training Epoch {epoch + 1} (resuming from step {global_step})")
+        
         for batch_idx, (inputs, targets) in enumerate(progress_bar):
+            # Skip batches if resuming mid-epoch
+            if batches_to_skip > 0 and batch_idx < batches_to_skip:
+                continue
             inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
             
             # Forward pass with mixed precision
@@ -1117,63 +1142,65 @@ def train(
                     scheduler.step()
                     optimizer.zero_grad()
                 
-                global_step += 1
-                
-                # Logging
-                if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb:
-                    wandb.log({
-                        'train_loss_step': batch_loss,
-                        'learning_rate': current_lr,
-                        'global_step': global_step,
-                        'epoch': epoch + 1
-                    })
+                # Only increment global_step if we're not skipping batches
+                if not (batches_to_skip > 0 and batch_idx < batches_to_skip):
+                    global_step += 1
+                    
+                    # Logging
+                    if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb:
+                        wandb.log({
+                            'train_loss_step': batch_loss,
+                            'learning_rate': current_lr,
+                            'global_step': global_step,
+                            'epoch': epoch + 1
+                        })
+                    
+                    # Quick evaluation
+                    if global_step % TRAINING_CONFIG['eval_steps'] == 0 and global_step > 0:
+                        print(f"\nQuick eval at step {global_step}")
+                        model.eval()
+                        quick_val_loss = 0
+                        quick_batches = 0
+                        
+                        with torch.no_grad():
+                            for val_batch_idx, (val_inputs, val_targets) in enumerate(val_loader):
+                                if val_batch_idx >= 10:  # Quick eval
+                                    break
+                                val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+                                
+                                with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
+                                    _, val_loss = model(val_inputs, val_targets)
+                                
+                                quick_val_loss += val_loss.item()
+                                quick_batches += 1
+                        
+                        avg_quick_val_loss = quick_val_loss / quick_batches if quick_batches > 0 else float('inf')
+                        print(f"Step {global_step}: Train: {total_train_loss/num_train_batches:.4f}, Quick Val: {avg_quick_val_loss:.4f}")
+                        
+                        if use_wandb:
+                            wandb.log({
+                                'quick_val_loss': avg_quick_val_loss,
+                                'train_loss_avg': total_train_loss/num_train_batches,
+                                'global_step': global_step
+                            })
+                        
+                        model.train()
+                        cleanup_memory()
+                    
+                    # Checkpoint saving
+                    if global_step % TRAINING_CONFIG['checkpoint_steps'] == 0 and global_step > 0:
+                        checkpoint_path = f"checkpoints/checkpoint_step_{global_step}.safetensors"
+                        save_checkpoint(
+                            model, optimizer, scheduler, scaler, epoch, global_step,
+                            best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
+                            checkpoint_path=checkpoint_path
+                        )
                 
                 if global_step % 10 == 0: 
                     cleanup_memory()
                     
                 if batch_idx % TRAINING_CONFIG['accumulation_steps'] == 0:
                     torch.cuda.empty_cache()
-                
-                # Quick evaluation
-                if global_step % TRAINING_CONFIG['eval_steps'] == 0 and global_step > 0:
-                    print(f"\nQuick eval at step {global_step}")
-                    model.eval()
-                    quick_val_loss = 0
-                    quick_batches = 0
-                    
-                    with torch.no_grad():
-                        for val_batch_idx, (val_inputs, val_targets) in enumerate(val_loader):
-                            if val_batch_idx >= 10:  # Quick eval
-                                break
-                            val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
-                            
-                            with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
-                                _, val_loss = model(val_inputs, val_targets)
-                            
-                            quick_val_loss += val_loss.item()
-                            quick_batches += 1
-                    
-                    avg_quick_val_loss = quick_val_loss / quick_batches if quick_batches > 0 else float('inf')
-                    print(f"Step {global_step}: Train: {total_train_loss/num_train_batches:.4f}, Quick Val: {avg_quick_val_loss:.4f}")
-                    
-                    if use_wandb:
-                        wandb.log({
-                            'quick_val_loss': avg_quick_val_loss,
-                            'train_loss_avg': total_train_loss/num_train_batches,
-                            'global_step': global_step
-                        })
-                    
-                    model.train()
-                    cleanup_memory()
-                
-                # Checkpoint saving
-                if global_step % TRAINING_CONFIG['checkpoint_steps'] == 0 and global_step > 0:
-                    checkpoint_path = f"checkpoints/checkpoint_step_{global_step}.safetensors"
-                    save_checkpoint(
-                        model, optimizer, scheduler, scaler, epoch, global_step,
-                        best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
-                        checkpoint_path=checkpoint_path
-                    )
         
         avg_train_loss = total_train_loss / num_train_batches
         print(f"\nEpoch {epoch + 1} completed: Train Loss: {avg_train_loss:.4f}")
@@ -1420,6 +1447,34 @@ def find_latest_checkpoint(checkpoint_dir="checkpoints"):
     print(f"Latest checkpoint found: {latest_checkpoint}")
     return latest_checkpoint
 
+def debug_resume_info(checkpoint_path):
+    """Debug resume information"""
+    if not os.path.exists(checkpoint_path):
+        print(f"Checkpoint not found: {checkpoint_path}")
+        return None
+    
+    try:
+        from safetensors import safe_open
+        with safe_open(checkpoint_path, framework="pt") as f:
+            metadata = f.metadata()
+        
+        print(f"Checkpoint Debug Info:")
+        print(f"  Path: {checkpoint_path}")
+        print(f"  Epoch: {metadata.get('epoch', 'N/A')}")
+        print(f"  Global Step: {metadata.get('global_step', 'N/A')}")
+        print(f"  Best Val Loss: {metadata.get('best_val_loss', 'N/A')}")
+        print(f"  Model Type: {metadata.get('model_type', 'N/A')}")
+        print(f"  DeepSpeed: {metadata.get('deepspeed', 'N/A')}")
+        
+        return {
+            'epoch': int(metadata.get('epoch', '0')),
+            'global_step': int(metadata.get('global_step', '0')),
+            'best_val_loss': float(metadata.get('best_val_loss', 'inf')),
+        }
+    except Exception as e:
+        print(f"Error reading checkpoint metadata: {e}")
+        return None
+
 def load_and_preprocess_data(max_samples=150000):
     def clean_text(text: str) -> str:
         text = unicodedata.normalize("NFKC", text)
@@ -1453,7 +1508,8 @@ def generate(text,
              temperature=0.8,
              top_p=0.9,
              top_k=50,
-             device=None):
+             device=None,
+             use_half_precision=True):
 
     # Device setup
     if device is None:
@@ -1466,6 +1522,7 @@ def generate(text,
     print(f"Model: {model_path}")
     print(f"Tokenizer: {tokenizer_path}")
     print(f"Device: {device}")
+    print(f"Half precision: {use_half_precision}")
     
     # Load tokenizer
     tokenizer = create_tokenizer(model_path=tokenizer_path)
@@ -1481,6 +1538,10 @@ def generate(text,
     
     config = json.loads(metadata.get('config', '{}'))
     
+    # Disable FlashAttention for generation to avoid dtype issues
+    config['use_flash_attention'] = False
+    print("FlashAttention disabled for generation (dtype compatibility)")
+    
     # Create model
     model = Transformer(config, tokenizer).to(device)
     
@@ -1495,6 +1556,12 @@ def generate(text,
             new_state_dict[k] = v
     
     model.load_state_dict(new_state_dict, strict=False)
+    
+    # Convert to half precision if requested and on CUDA
+    if use_half_precision and device.type == 'cuda':
+        model = model.half()
+        print("Model converted to half precision (fp16)")
+    
     model.eval()
     
     print(f"Model loaded: {model.get_num_params()/1e6:.1f}M parameters")
@@ -1502,13 +1569,27 @@ def generate(text,
     
     # Generate
     with torch.no_grad():
-        generated_text = model.generate_from_prompt(
-            text, 
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k
-        )
+        try:
+            generated_text = model.generate_from_prompt(
+                text, 
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k
+            )
+        except Exception as e:
+            print(f"Generation failed: {e}")
+            print("Falling back to CPU generation without half precision...")
+            
+            # Fallback to CPU with full precision
+            model = model.float().cpu()
+            generated_text = model.generate_from_prompt(
+                text, 
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k
+            )
     
     print(f"\nGenerated text:")
     print("="*80)
@@ -1520,15 +1601,15 @@ def generate(text,
 
 if __name__ == "__main__":
     try:
-        model = train()
+        #model = train()
         
         # Örnek kullanımlar:
-        # model = train(auto_resume=True)  # Resume from latest checkpoint
+          model = train(auto_resume=True)  # Resume from latest checkpoint
         # model = train(resume_from_checkpoint="checkpoints/checkpoint_step_1000.safetensors")
         # model = train(pretrained_model_path="checkpoints/best_model_130m_rtx3050.safetensors", fresh_epochs=10)
-        
+                
         # Generation example:
-        # generate("Türkiye'nin başkenti", model_path="checkpoints/best_model_130m_rtx3050.safetensors")
+        #generate("Ekrem İmamoğlu", model_path="checkpoints/checkpoint_step_1500.safetensors", use_half_precision=False)
         
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
