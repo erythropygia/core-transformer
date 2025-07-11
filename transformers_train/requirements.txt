@@ -1,23 +1,12 @@
-datasets>=2.12.0
-sentencepiece>=0.1.99
+torch>=2.0.0
+transformers>=4.30.0
+datasets>=2.10.0
 wandb>=0.15.0
 tqdm>=4.65.0
 numpy>=1.24.0
+sentencepiece>=0.1.99
 safetensors>=0.3.0
-accelerate>=0.20.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
-scikit-learn>=1.3.0
-flash-attn>=2.3.0
-nltk>=3.8.0
-packaging
-
-# Turkish Tokenizer Training Dependencies
-sentencepiece>=0.1.99          # SentencePiece tokenizer
-wikipedia>=1.4.0               # Wikipedia data download
-requests>=2.28.0               # HTTP requests
-urllib3>=1.26.0                # URL handling
-
-# Optional: For better dataset handling
-huggingface-hub>=0.10.0        # Hugging Face Hub access
-fsspec>=2022.1.0               # File system interfaces 
+deepspeed>=0.9.0
+ninja  # Required for DeepSpeed compilation
+psutil  # System monitoring
+accelerate>=0.20.0  # Hugging Face acceleration library 
