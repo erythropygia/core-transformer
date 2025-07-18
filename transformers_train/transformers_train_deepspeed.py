@@ -81,9 +81,9 @@ except ImportError:
 _MESSAGES_PRINTED = True
 
 MODEL_CONFIG = {
-    'n_embd': 768,          # 768 embedding dimension 
-    'n_layer': 12,          # 12 transformer layer
-    'n_head': 12,           # 12 attention head 
+    'n_embd': 768,          # 768 embedding dimension
+    'n_layer': 14,          # 14 transformer layer (~120M parameters)
+    'n_head': 12,           # 12 attention head (768 ÷ 12 = 64 head_dim)
     'block_size': 1024,     # 1024 context window
     'dropout': 0.1,         # Dropout
     'vocab_size': None,     # tokenizer'dan alınacak
