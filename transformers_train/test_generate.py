@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Test script for clean text generation
-"""
-
 import sys
 import os
 sys.path.append('transformers_train')
@@ -22,18 +17,15 @@ def test_generation():
         "İstanbul Boğazı"
     ]
     
-    print("🤖 Turkish GPT-2 Text Generation Test")
-    print("="*50)
-    
     for prompt in test_prompts:
-        print(f"\n📝 Prompt: {prompt}")
-        print("📄 Generated:", end=" ")
+        print(f"\nPrompt: {prompt}")
+        print("Generated:", end=" ")
         
         try:
             # Silent generation - no debug output
             result = generate(
                 prompt, 
-                model_path="transformers_train/checkpoints/best_model_120m_8gb.safetensors",
+                model_path="transformers_train/checkpoints/best_model_120m.safetensors",
                 max_new_tokens=50,
                 temperature=0.8,
                 top_p=0.9,
@@ -42,11 +34,9 @@ def test_generation():
             print(result)
             
         except FileNotFoundError:
-            print("❌ Model not found. Train the model first!")
+            print("Model not found. Train the model first!")
         except Exception as e:
-            print(f"❌ Error: {e}")
-    
-    print("\n" + "="*50)
+            print(f"Error: {e}")
 
 if __name__ == "__main__":
     test_generation() 
