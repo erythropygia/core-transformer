@@ -81,10 +81,10 @@ except ImportError:
 _MESSAGES_PRINTED = True
 
 MODEL_CONFIG = {
-    'n_embd': 768,          # 768 embedding dimension
+    'n_embd': 768,          # 768 embedding dimension 
     'n_layer': 12,          # 12 transformer layer
-    'n_head': 12,           # 12 attention head
-    'block_size': 2048,     # 2048 context window 
+    'n_head': 12,           # 12 attention head 
+    'block_size': 1024,     # 1024 context window
     'dropout': 0.1,         # Dropout
     'vocab_size': None,     # tokenizer'dan alınacak
     'use_flash_attention': True,   # Flash Attention aktif
@@ -93,7 +93,7 @@ MODEL_CONFIG = {
 }
 
 TRAINING_CONFIG = {
-    'batch_size': 2,        # RTX 3050 için optimize (8->2)
+    'batch_size': 4,       
     'learning_rate': 6e-4,  
     'weight_decay': 0.1,   
     'beta1': 0.9,
@@ -103,19 +103,19 @@ TRAINING_CONFIG = {
     'max_epochs': 50,       
     'eval_interval': 2,     
     'save_interval': 5,     
-    'accumulation_steps': 16,  # RTX 3050 için düşük (2 * 16 = 32 effective batch) 
+    'accumulation_steps': 8,  
     'use_wandb': True,
     'compile_model': False,
     'scheduler_type': 'cosine_with_warmup',
-    'eval_generation_samples': 3,
-    'max_eval_batches': 50,
+    'eval_generation_samples': 3, 
+    'max_eval_batches': 50, 
     
-    'use_cpu_offload': True,     
+    'use_cpu_offload': False,     
     'use_activation_checkpointing': True,
     'use_mixed_precision': True, 
     'dataloader_num_workers': 2, 
-    'pin_memory': True,          # Memory transfer rate
-    'prefetch_factor': 2,        # Prefetch optimization
+    'pin_memory': True,         
+    'prefetch_factor': 2,        
     
     # Progress reporting
     'log_interval': 50,     
@@ -130,13 +130,13 @@ TRAINING_CONFIG = {
     'use_cosine_restarts': False,
     
     'vocab_size': 32000,
-    'max_data_samples': 150000, 
+    'max_data_samples': 150000,  
     
-    # DeepSpeed RTX 3050 Optimization
+    # DeepSpeed 8GB VRAM Optimization
     'use_deepspeed': False,          # DeepSpeed kullan (True/False)
     'deepspeed_config_path': 'transformers_train/config/simple_deepspeed.json',   # Config file path
-    'zero_stage': 2,                 # ZeRO Stage 2 (RTX 3050 için optimal)
-    'cpu_offload': True,             # CPU offload aktif
+    'zero_stage': 2,                 # ZeRO Stage 2 
+    'cpu_offload': False,            # 8GB VRAM için kapatıldı
     'nvme_offload': False,           # NVMe offload (SSD gerekli)
     'allgather_bucket_size': 5e8,    # Memory optimization
     'reduce_bucket_size': 5e8,       # Memory optimization
@@ -268,13 +268,9 @@ def create_tokenizer(model_path: str = None):
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Tokenizer file not found: {model_path}")
     
-    # SentencePiece processor oluştur
     sp = smp.SentencePieceProcessor()
     sp.load(model_path)
-    
-    print(f"SentencePiece tokenizer loaded: {model_path}")
-    print(f"Vocabulary size: {sp.vocab_size()}")
-    
+
     # Wrapper class for compatibility
     class TokenizerWrapper:
         def __init__(self, sp_processor):
@@ -581,7 +577,7 @@ class Transformer(nn.Module):
 def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()  # GPU işlemlerini bekle
+        torch.cuda.synchronize()  
     gc.collect()
     
 def get_memory_usage_safe():
@@ -589,18 +585,46 @@ def get_memory_usage_safe():
         try:
             allocated = torch.cuda.memory_allocated() / 1024**3  # GB
             reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+            # Fix: Proper total memory calculation
             total = torch.cuda.get_device_properties(0).total_memory / 1024**3
             return f"GPU: {allocated:.2f}GB/{total:.1f}GB (Reserved: {reserved:.2f}GB)"
-        except:
-            return "GPU: Memory calculation error"
+        except Exception as e:
+            # Better error handling
+            return f"GPU: Memory error - {str(e)[:50]}"
     return "CPU Mode"
 
 def get_memory_usage():
     if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-        reserved = torch.cuda.memory_reserved() / 1024**3    # GB
-        return f"GPU: {allocated:.2f}GB/{reserved:.2f}GB"
+        try:
+            allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+            reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            return f"GPU: {allocated:.2f}GB/{total:.1f}GB (Reserved: {reserved:.2f}GB)"
+        except Exception as e:
+            return f"GPU: Error - {str(e)[:30]}"
     return "CPU Mode"
+
+def get_gpu_memory_info():
+    """Detailed GPU memory information"""
+    if torch.cuda.is_available():
+        try:
+            device_props = torch.cuda.get_device_properties(0)
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            total = device_props.total_memory / 1024**3
+            free = total - reserved
+            
+            return {
+                'allocated_gb': allocated,
+                'reserved_gb': reserved,
+                'total_gb': total,
+                'free_gb': free,
+                'utilization_pct': (reserved / total) * 100,
+                'device_name': device_props.name
+            }
+        except Exception as e:
+            return {'error': str(e)}
+    return {'error': 'CUDA not available'}
 
 # Advanced LR Schedulers
 def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, min_lr_ratio=0.1):
@@ -664,7 +688,7 @@ class EarlyStopping:
 
 @torch.no_grad()
 def calculate_perplexity(model, data_loader, device, device_type, max_batches=50):
-    """Perplexity calculation - RTX 3050 için optimize"""
+    """Perplexity calculation"""
     model.eval()
     total_loss = 0
     total_tokens = 0
@@ -694,7 +718,7 @@ def calculate_perplexity(model, data_loader, device, device_type, max_batches=50
 
 @torch.no_grad() 
 def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_tokens=30):
-    """Generation quality evaluation - RTX 3050 için kısa"""
+    """Generation quality evaluation"""
     model.eval()
     results = {
         'samples': [],
@@ -750,7 +774,7 @@ def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_
 
 @torch.no_grad()
 def evaluate_model_comprehensive(model, val_loader, tokenizer, device, device_type, config):
-    """Comprehensive model evaluation - RTX 3050 optimized"""
+    """Comprehensive model evaluation"""
     metrics = {}
     
     # 1. Standard loss evaluation
@@ -803,9 +827,9 @@ def evaluate_model_comprehensive(model, val_loader, tokenizer, device, device_ty
 def train(
     tokenizer_path="turkish_tokenizer/turkish_tokenizer.model",
     resume_from_checkpoint=None,
-    auto_resume=True,
+    auto_resume=False,
     use_wandb=True,
-    project_name="turkish-transformer-100m",
+    project_name="turkish-transformer-120m",
     pretrained_model_path=None,
     fresh_epochs=None
 ):
@@ -824,19 +848,26 @@ def train(
     if torch.cuda.is_available():
         device = torch.device('cuda')
         device_type = "cuda"
-        print(f"Device: {device} ({torch.cuda.get_device_name()})")
-        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
+        
+        # Detailed GPU info
+        gpu_info = get_gpu_memory_info()
+        print(f"Device: {device} ({gpu_info.get('device_name', 'Unknown')})")
+        print(f"VRAM: {gpu_info.get('total_gb', 0):.1f}GB total")
         
         torch.cuda.empty_cache()
         cleanup_memory()
-        print("Memory cleaned")
+        print("Initial memory cleaned")
+        
+        # Check if we have enough VRAM for training
+        if gpu_info.get('total_gb', 0) < 4.0:
+            print("WARNING: Less than 4GB VRAM detected! Training may fail.")
+            print("Consider using DeepSpeed with CPU offload or reducing batch size further.")
+            
+        print(f"Memory after cleanup: {get_memory_usage()}")
     else:
         device = torch.device('cpu')
         device_type = "cpu"
         print(f"CUDA not available, using CPU")
-    
-    # Memory info
-    print(f"Memory usage at start: {get_memory_usage()}")
     
     # Features
     print(f"Flash Attention: {'OK' if FLASH_ATTENTION_AVAILABLE else 'NO'}")
@@ -907,9 +938,7 @@ def train(
     train_dataset = Dataset(train_tokens, MODEL_CONFIG['block_size'])
     val_dataset = Dataset(val_tokens, MODEL_CONFIG['block_size'])
     
-    # global_step already initialized at function start
-    
-    # Create basic DataLoader first (will be recreated after resume)
+
     train_loader = DataLoader(
         train_dataset, 
         batch_size=TRAINING_CONFIG['batch_size'],
@@ -1033,23 +1062,23 @@ def train(
                 global_step = resume_info['global_step']
                 best_val_loss = resume_info['best_val_loss']
                 
-                # CRITICAL: Global step'e göre doğru epoch'u hesapla
-                estimated_steps_per_epoch = len(train_loader) // TRAINING_CONFIG['accumulation_steps']
-                calculated_epoch = global_step // estimated_steps_per_epoch
+                steps_per_epoch = len(train_loader) // TRAINING_CONFIG['accumulation_steps']
+                calculated_epoch = global_step // steps_per_epoch if steps_per_epoch > 0 else 0
                 
                 print(f"RESUME ANALYSIS:")
                 print(f"  Loaded epoch: {loaded_epoch}")
                 print(f"  Global step: {global_step}")
-                print(f"  Steps per epoch: {estimated_steps_per_epoch}")
+                print(f"  Steps per epoch: {steps_per_epoch}")
                 print(f"  Calculated epoch from global_step: {calculated_epoch}")
                 
-                start_epoch = calculated_epoch
+                # Use the maximum of loaded_epoch and calculated_epoch to be safe
+                start_epoch = max(loaded_epoch, calculated_epoch)
                 
-                print(f"  >>> Using calculated epoch: {start_epoch}")
-                print(f"  >>> This epoch has completed {global_step % estimated_steps_per_epoch} steps.")
+                print(f"  >>> Using epoch: {start_epoch}")
+                print(f"  >>> This epoch has completed {global_step % steps_per_epoch if steps_per_epoch > 0 else 0} steps.")
                 
                 print(f"Resume successful: Epoch {start_epoch}, Step {global_step}, Best Val Loss: {best_val_loss:.4f}")
-                print(f"Estimated steps per epoch: {estimated_steps_per_epoch}")
+                print(f"Estimated steps per epoch: {steps_per_epoch}")
                 
                 # Recreate DataLoader with proper seed for resume
                 print(f"Recreating DataLoader with seed based on global_step: {global_step}")
@@ -1104,11 +1133,14 @@ def train(
         progress_bar = tqdm(train_loader, desc=f"Training Epoch {epoch + 1}")
         
 
-        print(f"Resume info: Starting from saved epoch {epoch + 1}, global step {global_step}")
-        estimated_steps_per_epoch = len(train_loader) // TRAINING_CONFIG['accumulation_steps']
-        expected_epoch = global_step // estimated_steps_per_epoch
-        print(f"  Estimated steps per epoch: {estimated_steps_per_epoch}")
-        print(f"  Expected epoch from global_step: {expected_epoch}")
+        if(global_step > 0):
+            print(f"Resume info: Starting from saved epoch {epoch + 1}, global step {global_step}")
+        steps_per_epoch = len(train_loader) // TRAINING_CONFIG['accumulation_steps']
+        expected_epoch_from_step = global_step // steps_per_epoch if steps_per_epoch > 0 else 0
+        print(f"  Steps per epoch: {steps_per_epoch}")
+        print(f"  Expected epoch from global_step: {expected_epoch_from_step}")
+        print(f"  Total batches this epoch: {len(train_loader)}")
+        print(f"  Accumulation steps: {TRAINING_CONFIG['accumulation_steps']}")
         
         batch_counter = 0
         for batch_idx, (inputs, targets) in enumerate(progress_bar):
@@ -1227,10 +1259,12 @@ def train(
                         checkpoint_path=checkpoint_path
                     )
             
-            if global_step % 10 == 0: 
+            # Less frequent memory cleanup to avoid performance hit
+            if global_step % 50 == 0: 
                 cleanup_memory()
                 
-            if batch_idx % TRAINING_CONFIG['accumulation_steps'] == 0:
+            # Only clear cache after actual optimizer steps, not every batch
+            if (batch_idx + 1) % TRAINING_CONFIG['accumulation_steps'] == 0:
                 torch.cuda.empty_cache()
         
         avg_train_loss = total_train_loss / num_train_batches
@@ -1281,7 +1315,7 @@ def train(
                 save_checkpoint(
                     model, optimizer, scheduler, scaler, epoch, global_step,
                     best_val_loss, perplexity, MODEL_CONFIG, tokenizer_path,
-                    checkpoint_path="checkpoints/best_model_130m_rtx3050.safetensors"
+                    checkpoint_path="checkpoints/best_model_120m_8gb.safetensors"
                 )
                 print(f"New best model saved! Val loss: {val_loss:.4f}")
             
@@ -1505,14 +1539,15 @@ def load_and_preprocess_data(max_samples=150000):
     return processed_texts
 
 def generate(text, 
-             model_path="checkpoints/best_model_100m.safetensors",
+             model_path="checkpoints/best_model_120m.safetensors",
              tokenizer_path="turkish_tokenizer/turkish_tokenizer.model",
              max_new_tokens=100,
              temperature=0.8,
              top_p=0.9,
              top_k=50,
              device=None,
-             use_half_precision=True):
+             use_half_precision=True,
+             silent=True):
 
     # Device setup
     if device is None:
@@ -1521,14 +1556,17 @@ def generate(text,
         else:
             device = torch.device('cpu')
     
-    print(f"Generating text with RTX 3050 optimized model")
-    print(f"Model: {model_path}")
-    print(f"Tokenizer: {tokenizer_path}")
-    print(f"Device: {device}")
-    print(f"Half precision: {use_half_precision}")
+    # Load tokenizer (suppress output)
+    import sys
+    from contextlib import redirect_stdout, redirect_stderr
+    import os
     
-    # Load tokenizer
-    tokenizer = create_tokenizer(model_path=tokenizer_path)
+    if silent:
+        with open(os.devnull, 'w') as devnull:
+            with redirect_stdout(devnull), redirect_stderr(devnull):
+                tokenizer = create_tokenizer(model_path=tokenizer_path)
+    else:
+        tokenizer = create_tokenizer(model_path=tokenizer_path)
     
     # Load model
     if not model_path.endswith('.safetensors'):
@@ -1543,7 +1581,6 @@ def generate(text,
     
     # Disable FlashAttention for generation to avoid dtype issues
     config['use_flash_attention'] = False
-    print("FlashAttention disabled for generation (dtype compatibility)")
     
     # Create model
     model = Transformer(config, tokenizer).to(device)
@@ -1563,12 +1600,8 @@ def generate(text,
     # Convert to half precision if requested and on CUDA
     if use_half_precision and device.type == 'cuda':
         model = model.half()
-        print("Model converted to half precision (fp16)")
     
     model.eval()
-    
-    print(f"Model loaded: {model.get_num_params()/1e6:.1f}M parameters")
-    print(f"Memory usage: {get_memory_usage()}")
     
     # Generate
     with torch.no_grad():
@@ -1581,9 +1614,6 @@ def generate(text,
                 top_k=top_k
             )
         except Exception as e:
-            print(f"Generation failed: {e}")
-            print("Falling back to CPU generation without half precision...")
-            
             # Fallback to CPU with full precision
             model = model.float().cpu()
             generated_text = model.generate_from_prompt(
@@ -1594,25 +1624,31 @@ def generate(text,
                 top_k=top_k
             )
     
-    print(f"\nGenerated text:")
-    print("="*80)
-    print(generated_text)
-    print("="*80)
-    
     cleanup_memory()
+    
+    # Only print the result, nothing else
+    if not silent:
+        print(generated_text)
+    
     return generated_text
 
 if __name__ == "__main__":
+    # Suppress unnecessary warnings
+    import os
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
+    os.environ['TRANSFORMERS_VERBOSITY'] = 'error'  # Suppress transformers warnings
+    
     try:
-        #model = train()
+        model = train()
+        #model = train(auto_resume=True, use_wandb=False)  # Resume from latest checkpoint
         
-        # Örnek kullanımlar:
-        model = train(auto_resume=True)  # Resume from latest checkpoint
+        # Example usage:
         # model = train(resume_from_checkpoint="checkpoints/checkpoint_step_1000.safetensors")
-        # model = train(pretrained_model_path="checkpoints/best_model_130m_rtx3050.safetensors", fresh_epochs=10)
-                
-        # Generation example:
-        #generate("Ekrem İmamoğlu", model_path="checkpoints/checkpoint_step_1500.safetensors", use_half_precision=False)
+        # model = train(pretrained_model_path="checkpoints/best_model_120m_8gb.safetensors", fresh_epochs=10)
+        
+        # Silent generation example:
+        # result = generate("Türkiye'nin başkenti", silent=True)
+        # print(result)  # Only print the result
         
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
@@ -1621,13 +1657,10 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
     finally:
-        # Proper cleanup for DeepSpeed/PyTorch
         try:
             if torch.distributed.is_initialized():
                 torch.distributed.destroy_process_group()
-                print("Process group destroyed successfully")
         except:
             pass
         
         cleanup_memory()
-        print("Training session ended")
