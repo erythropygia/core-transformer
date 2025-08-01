@@ -15,7 +15,7 @@ from deepspeed_config.deepspeed_config import create_deepspeed_config
 from .utils import EarlyStopping, cleanup_memory, evaluate_model_comprehensive, get_cosine_schedule_with_warmup, get_gpu_memory_info, get_memory_usage, get_memory_usage_safe
 from .config import MODEL_CONFIG, TRAINING_CONFIG, TEST_PROMPTS
 from .tokenizer import create_tokenizer
-from .dataset import TransformerDataset
+from .dataset import TransformerDataset, load_and_preprocess_data
 from .transformer_block import Transformer
 
 try:
@@ -682,31 +682,6 @@ def find_latest_checkpoint(checkpoint_dir="checkpoints"):
     latest_checkpoint = max(checkpoint_files, key=os.path.getmtime)
     print(f"Latest checkpoint found: {latest_checkpoint}")
     return latest_checkpoint
-
-def load_and_preprocess_data(max_samples=150000):
-    def clean_text(text: str) -> str:
-        text = unicodedata.normalize("NFKC", text)
-        text = re.sub(r'\[.*?\]|\(.*?\)', '', text)
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
-    
-    dataset = load_dataset("musabg/wikipedia-tr-summarization", split='train')
-    processed_texts = []
-    
-    print(f"Dataset total size: {len(dataset):,}")
-    
-    max_samples = min(len(dataset), max_samples)
-    
-    for i in tqdm(range(max_samples), desc="Processing texts"):
-        text = clean_text(dataset[i]["text"])
-        if len(text) > 100:  # Longer texts for better training
-            processed_texts.append(text)
-        
-        if i % 10000 == 0:
-            cleanup_memory()
-    
-    print(f"Processed {len(processed_texts):,} texts")
-    return processed_texts
 
 def generate(text, 
              model_path="checkpoints/best_model_120m.safetensors",

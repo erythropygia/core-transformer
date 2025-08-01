@@ -55,8 +55,6 @@ def get_gpu_memory_info():
     return {'error': 'CUDA not available'}
 
 def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, min_lr_ratio=0.1):
-    """Cosine learning rate scheduler with warmup"""
-    
     def lr_lambda(current_step):
         if current_step < num_warmup_steps:
             return float(current_step) / float(max(1, num_warmup_steps))
