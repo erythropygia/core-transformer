@@ -2,3 +2,6 @@ checkpoints/
 wandb/
 tokenizer_train/data/
 model/
+
+*.pyc
+__pycache__/

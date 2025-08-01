@@ -1,11 +1,9 @@
-import sys
 import os
-sys.path.append('transformers_train')
-
-from transformers_train_deepspeed import generate
+from transformer.train import generate      
+from transformer.tokenizer import create_tokenizer
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+os.environ['TRANSFORMERS_VERBOSITY'] = 'error'  
 
 def generate_text():
     test_prompts = [

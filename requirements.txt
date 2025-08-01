@@ -7,6 +7,6 @@ numpy>=1.24.0
 sentencepiece>=0.1.99
 safetensors>=0.3.0
 deepspeed>=0.9.0
-ninja  # Required for DeepSpeed compilation
-psutil  # System monitoring
-accelerate>=0.20.0  # Hugging Face acceleration library 
+ninja 
+psutil 
+accelerate>=0.20.0 
