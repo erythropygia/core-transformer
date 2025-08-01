@@ -1,9 +1,11 @@
 import os
 import sentencepiece as spm
 from pathlib import Path
+import time
+import sys
 
-def test_turkish_tokenizer():
-    model_file = Path('tokenizer_train/turkish_tokenizer/turkish_tokenizer.model')
+def test_tokenizer():
+    model_file = Path('turkish_tokenizer/turkish_tokenizer.model')
     
     if not model_file.exists():
         print("Model file not found!")
@@ -11,12 +13,9 @@ def test_turkish_tokenizer():
         print("First train the tokenizer: python train_turkish_tokenizer.py")
         return
     
-    # Load model
     sp = spm.SentencePieceProcessor()
     sp.load(str(model_file))
     
-    print("Turkish Tokenizer Test Suite")
-    print("=" * 60)
     print(f"Model: {model_file}")
     print(f"Vocabulary size: {sp.vocab_size():,}")
     print(f"UNK token ID: {sp.unk_id()}")
@@ -25,7 +24,6 @@ def test_turkish_tokenizer():
     print(f"PAD token ID: {sp.pad_id()}")
     print()
     
-    # Check special tokens - Updated with new tokens
     special_tokens = [
         # Document structure tokens
         '<|beginoftext|>', '<|endoftext|>', '<|startoftext|>', '<newline>',
@@ -42,7 +40,6 @@ def test_turkish_tokenizer():
     ]
     
     print("Special Token Verification:")
-    print("-" * 40)
     found_tokens = 0
     for token in special_tokens:
         token_id = sp.piece_to_id(token)
@@ -55,9 +52,7 @@ def test_turkish_tokenizer():
     print(f"\nToken Coverage: {found_tokens}/{len(special_tokens)} ({found_tokens/len(special_tokens)*100:.1f}%)")
     print()
     
-    # Test document structure tokens specifically
     print("Document Structure Token Test:")
-    print("-" * 40)
     
     document_example = f"{sp.id_to_piece(sp.piece_to_id('<|beginoftext|>'))}" + \
                       "Bu bir örnek Türkçe belge içeriğidir. " + \
@@ -79,16 +74,15 @@ def test_turkish_tokenizer():
     test_sentences = [
         "Merhaba dünya! 🌍 Türkçe tokenizer nasıl çalışıyor?",
         "Türkiye'nin başkenti Ankara'dır ve en büyük şehri İstanbul'dur.",
-        "Öğrencilerimiz sınavlarında çok başarılı oldular. 🎓",
+        "Öğrencilerimiz sınavlarında çok başarılı oldular.",
         "Evlerimizde, okullarımızda, iş yerlerimizde hep birlikte yaşıyoruz.",
-        "Teknolojik gelişmeler hayatımızı kolaylaştırıyor. 💻",
-        "Arkadaşlarımızla birlikte güzel anılar oluşturuyoruz. 😊"
+        "Teknolojik gelişmeler hayatımızı kolaylaştırıyor.",
+        "Arkadaşlarımızla birlikte güzel anılar oluşturuyoruz."
     ]
     
     for i, sentence in enumerate(test_sentences, 1):
         print(f"Test {i}: {sentence}")
         
-        # Encode (tokenize)
         tokens = sp.encode(sentence, out_type=str)
         token_ids = sp.encode(sentence, out_type=int)
         
@@ -96,7 +90,6 @@ def test_turkish_tokenizer():
         print(f"   Token count: {len(tokens)}")
         print(f"   Compression ratio: {len(sentence) / len(tokens):.2f} chars/token")
         
-        # Decode (detokenize)
         decoded = sp.decode(token_ids)
         is_correct = sentence == decoded
         print(f"   {'Decode successful' if is_correct else 'Decode failed'}")
@@ -107,7 +100,6 @@ def test_turkish_tokenizer():
     
     # Turkish morphology test
     print("Turkish Morphology Analysis:")
-    print("-" * 40)
     
     morphology_examples = [
         ("ev", "evler", "evlerimiz", "evlerimizde"),
@@ -149,34 +141,27 @@ Başkent Ankara, büyük şehir İstanbul.</translate></|assistant|><|endoftext|
     print(f"   Total token count: {len(inst_tokens)}")
     print(f"   Average chars per token: {len(instruction_example) / len(inst_tokens):.2f}")
     
-    # Check if document structure tokens are present
     begin_token_present = '<|beginoftext|>' in inst_tokens
     end_token_present = '<|endoftext|>' in inst_tokens
     
     print(f"   {'OK' if begin_token_present else 'NO'} <|beginoftext|> token found")
     print(f"   {'OK' if end_token_present else 'NO'} <|endoftext|> token found")
     
-    # Decode check
     decoded_inst = sp.decode(inst_ids)
     decode_success = instruction_example == decoded_inst
     print(f"   {'OK' if decode_success else 'NO'} Instruction decode successful")
     print()
     
-    # Performance test
     print("Performance Benchmark:")
-    print("-" * 30)
     
-    import time
     
-    test_text = "Bu bir performans testidir." * 100  # Repeat 100 times
+    test_text = "Bu bir performans testidir." * 100 
     
-    # Encoding performance
     start_time = time.time()
     for _ in range(100):
         tokens = sp.encode(test_text, out_type=int)
     encoding_time = time.time() - start_time
     
-    # Decoding performance
     start_time = time.time()
     for _ in range(100):
         decoded = sp.decode(tokens)
@@ -190,10 +175,7 @@ Başkent Ankara, büyük şehir İstanbul.</translate></|assistant|><|endoftext|
     print(f"   Decoding speed: {len(test_text) * 100 / decoding_time:,.0f} chars/sec")
     print()
     
-    # Final summary
     print("All tests completed successfully!")
-    print("Turkish tokenizer is working perfectly!")
-    print("Ready for production use!")
 
 def interactive_test():
     
@@ -223,7 +205,6 @@ def interactive_test():
             if not text:
                 continue
             
-            # Tokenize
             tokens = sp.encode(text, out_type=str)
             token_ids = sp.encode(text, out_type=int)
             
@@ -232,7 +213,6 @@ def interactive_test():
             print(f"   Token count: {len(tokens)}")
             print(f"   Compression ratio: {len(text) / len(tokens):.2f} chars/token")
             
-            # Decode
             decoded = sp.decode(token_ids)
             print(f"   Decoded: {decoded}")
             print(f"   {'Perfect match!' if text == decoded else 'Mismatch detected'}")
@@ -250,4 +230,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--interactive":
         interactive_test()
     else:
-        test_turkish_tokenizer() 
+        test_tokenizer() 

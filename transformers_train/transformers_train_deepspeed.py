@@ -17,13 +17,12 @@ from pathlib import Path
 import wandb
 from typing import Optional, Dict, Any, Tuple, Optional, List
 import gc
-
 import numpy as np
+import sys
+from contextlib import redirect_stdout, redirect_stderr
 
-# Global flags to prevent spam messages
 _MESSAGES_PRINTED = False
 
-# DeepSpeed import for RTX 3050 optimization
 try:
     import deepspeed
     DEEPSPEED_AVAILABLE = True
@@ -34,7 +33,6 @@ except ImportError:
     if not _MESSAGES_PRINTED:
         print("DeepSpeed not available, install with: pip install deepspeed")
 
-# SafeTensors import for secure model saving
 try:
     from safetensors.torch import save_file, load_file
     SAFETENSORS_AVAILABLE = True
@@ -45,7 +43,6 @@ except ImportError:
     if not _MESSAGES_PRINTED:
         print("SafeTensors not available, install with: pip install safetensors")
 
-# SentencePiece import for Turkish tokenization
 try:
     import sentencepiece as smp
     SENTENCEPIECE_AVAILABLE = True
@@ -56,7 +53,6 @@ except ImportError:
     if not _MESSAGES_PRINTED:
         print("SentencePiece not available, install with: pip install sentencepiece")
 
-# Flash Attention import (optional)
 try:
     from flash_attn import flash_attn_func
     FLASH_ATTENTION_AVAILABLE = True
@@ -77,7 +73,6 @@ except ImportError:
     if not _MESSAGES_PRINTED:
         print("NLTK not available, BLEU scores will be skipped")
 
-# Mark messages as printed
 _MESSAGES_PRINTED = True
 
 MODEL_CONFIG = {
@@ -87,7 +82,7 @@ MODEL_CONFIG = {
     'block_size': 1024,     # 1024 context window
     'dropout': 0.1,         # Dropout
     'vocab_size': None,     # tokenizer'dan alınacak
-    'use_flash_attention': True,   # Flash Attention aktif
+    'use_flash_attention': True, 
     'use_gradient_checkpointing': True,  
     'use_selective_checkpointing': True, 
 }
@@ -133,10 +128,10 @@ TRAINING_CONFIG = {
     'max_data_samples': 150000,  
     
     # DeepSpeed 8GB VRAM Optimization
-    'use_deepspeed': False,          # DeepSpeed kullan (True/False)
+    'use_deepspeed': False,         
     'deepspeed_config_path': 'transformers_train/config/simple_deepspeed.json',   # Config file path
     'zero_stage': 2,                 # ZeRO Stage 2 
-    'cpu_offload': False,            # 8GB VRAM için kapatıldı
+    'cpu_offload': False,            
     'nvme_offload': False,           # NVMe offload (SSD gerekli)
     'allgather_bucket_size': 5e8,    # Memory optimization
     'reduce_bucket_size': 5e8,       # Memory optimization
@@ -208,7 +203,7 @@ def create_deepspeed_config(training_config, model_config):
             "profile": False
         },
         
-        # Memory optimization for RTX 3050
+        # Memory optimization for low VRAM
         "memory_optimization": {
             "deepspeed_activation_checkpointing": True,
             "optimize_with_cpu_offload": True,
@@ -228,7 +223,7 @@ def create_deepspeed_config(training_config, model_config):
         }
     }
     
-    # ZeRO Stage 3 için ek ayarlar (çok aggressive memory saving)
+    # ZeRO Stage 3 için ek ayarlar (çok aggressive memory saving yapar)
     if training_config.get('zero_stage', 2) == 3:
         config["zero_optimization"].update({
             "stage3_prefetch_bucket_size": 5e8,
@@ -238,7 +233,7 @@ def create_deepspeed_config(training_config, model_config):
             "stage3_gather_16bit_weights_on_model_save": True
         })
     
-    # NVMe offload (SSD gerekli)
+    # NVMe offload
     if training_config.get('nvme_offload', False):
         config["zero_optimization"]["offload_optimizer"] = {
             "device": "nvme",
@@ -271,7 +266,6 @@ def create_tokenizer(model_path: str = None):
     sp = smp.SentencePieceProcessor()
     sp.load(model_path)
 
-    # Wrapper class for compatibility
     class TokenizerWrapper:
         def __init__(self, sp_processor):
             self.sp = sp_processor
@@ -525,7 +519,7 @@ class Transformer(nn.Module):
         return logits, loss
     
     def get_num_params(self):
-        # Weight tying nedeniyle lm_head sayılmaz
+        # Weight tying nedeniyle lm_head sayılmaz, hesaplama hatasına sebep oluyor.
         n_params = sum(p.numel() for p in self.parameters())
         # Embedding weight'i iki kez sayıldığı için çıkar
         n_params -= self.wte.weight.numel()
@@ -585,11 +579,9 @@ def get_memory_usage_safe():
         try:
             allocated = torch.cuda.memory_allocated() / 1024**3  # GB
             reserved = torch.cuda.memory_reserved() / 1024**3    # GB
-            # Fix: Proper total memory calculation
             total = torch.cuda.get_device_properties(0).total_memory / 1024**3
             return f"GPU: {allocated:.2f}GB/{total:.1f}GB (Reserved: {reserved:.2f}GB)"
         except Exception as e:
-            # Better error handling
             return f"GPU: Memory error - {str(e)[:50]}"
     return "CPU Mode"
 
@@ -605,7 +597,6 @@ def get_memory_usage():
     return "CPU Mode"
 
 def get_gpu_memory_info():
-    """Detailed GPU memory information"""
     if torch.cuda.is_available():
         try:
             device_props = torch.cuda.get_device_properties(0)
@@ -626,7 +617,6 @@ def get_gpu_memory_info():
             return {'error': str(e)}
     return {'error': 'CUDA not available'}
 
-# Advanced LR Schedulers
 def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, min_lr_ratio=0.1):
     """Cosine learning rate scheduler with warmup"""
     
@@ -641,7 +631,6 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 def get_onecycle_scheduler(optimizer, max_lr, total_steps, div_factor=25, final_div_factor=10000):
-    """OneCycle learning rate scheduler"""
     return torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
         max_lr=max_lr,
@@ -652,7 +641,6 @@ def get_onecycle_scheduler(optimizer, max_lr, total_steps, div_factor=25, final_
     )
 
 def get_plateau_scheduler(optimizer, mode='min', factor=0.5, patience=3, verbose=True):
-    """Plateau-based learning rate scheduler"""
     return torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode=mode,
@@ -688,7 +676,6 @@ class EarlyStopping:
 
 @torch.no_grad()
 def calculate_perplexity(model, data_loader, device, device_type, max_batches=50):
-    """Perplexity calculation"""
     model.eval()
     total_loss = 0
     total_tokens = 0
@@ -708,7 +695,6 @@ def calculate_perplexity(model, data_loader, device, device_type, max_batches=50
         total_tokens += batch_tokens
         num_batches += 1
         
-        # Memory cleanup
         if batch_idx % 10 == 0:
             cleanup_memory()
     
@@ -718,7 +704,6 @@ def calculate_perplexity(model, data_loader, device, device_type, max_batches=50
 
 @torch.no_grad() 
 def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_tokens=30):
-    """Generation quality evaluation"""
     model.eval()
     results = {
         'samples': [],
@@ -755,7 +740,6 @@ def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_
                 'full_text': generated
             })
             
-            # Statistics
             tokens = tokenizer.encode(generated_text, add_special_tokens=False)
             total_length += len(tokens)
             all_tokens.update(tokens)
@@ -765,7 +749,6 @@ def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_
             print(f"Generation error for '{prompt}': {e}")
             continue
     
-    # Calculate metrics
     if results['samples']:
         results['avg_length'] = total_length / len(results['samples'])
         results['unique_tokens_ratio'] = len(all_tokens) / max(total_tokens, 1)
@@ -774,7 +757,6 @@ def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_
 
 @torch.no_grad()
 def evaluate_model_comprehensive(model, val_loader, tokenizer, device, device_type, config):
-    """Comprehensive model evaluation"""
     metrics = {}
     
     # 1. Standard loss evaluation
@@ -795,20 +777,17 @@ def evaluate_model_comprehensive(model, val_loader, tokenizer, device, device_ty
         total_loss += loss.item()
         num_batches += 1
         
-        # Memory cleanup every 10 batches
         if batch_idx % 10 == 0:
             cleanup_memory()
     
     metrics['val_loss'] = total_loss / num_batches if num_batches > 0 else float('inf')
     
-    # 2. Perplexity
     try:
         metrics['perplexity'] = calculate_perplexity(model, val_loader, device, device_type, max_batches=30)
     except Exception as e:
         print(f"Perplexity calculation error: {e}")
         metrics['perplexity'] = float('inf')
     
-    # 3. Generation quality
     try:
         num_samples = config.get('eval_generation_samples', 3)
         gen_results = evaluate_generation_quality(
@@ -837,46 +816,37 @@ def train(
     print("Transformer train")
     print("="*80)
     
-    # Initialize training state
+    # Initialize training state.
     global_step = 0
     start_epoch = 0
     best_val_loss = float('inf')
     
-    # RTX 3050 CUDA Memory Optimization
+    # CUDA Memory Optimization
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
     
     if torch.cuda.is_available():
         device = torch.device('cuda')
         device_type = "cuda"
         
-        # Detailed GPU info
         gpu_info = get_gpu_memory_info()
         print(f"Device: {device} ({gpu_info.get('device_name', 'Unknown')})")
         print(f"VRAM: {gpu_info.get('total_gb', 0):.1f}GB total")
         
         torch.cuda.empty_cache()
         cleanup_memory()
-        print("Initial memory cleaned")
-        
-        # Check if we have enough VRAM for training
-        if gpu_info.get('total_gb', 0) < 4.0:
-            print("WARNING: Less than 4GB VRAM detected! Training may fail.")
-            print("Consider using DeepSpeed with CPU offload or reducing batch size further.")
-            
+        print("Initial memory cleaned")    
         print(f"Memory after cleanup: {get_memory_usage()}")
     else:
         device = torch.device('cpu')
         device_type = "cpu"
         print(f"CUDA not available, using CPU")
     
-    # Features
     print(f"Flash Attention: {'OK' if FLASH_ATTENTION_AVAILABLE else 'NO'}")
     print(f"Gradient Checkpointing: OK")
     print(f"Mixed Precision: OK")
     print(f"CPU Offloading: OK")
     print(f"DeepSpeed: {'OK' if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed'] else 'NO'}")
     
-    # Wandb
     if use_wandb and TRAINING_CONFIG['use_wandb']:
         wandb.init(
             project=project_name,
@@ -899,7 +869,6 @@ def train(
     
     print(f"Vocabulary size: {tokenizer.vocab_size:,}")
     
-    # Test tokenization
     print("\nTesting new tokenizer:")
     test_text = "Türkiye'nin başkenti Ankara'dır. İstanbul Boğazı çok güzel."
     tokens = tokenizer.encode(test_text, add_special_tokens=False)
@@ -909,14 +878,12 @@ def train(
     print(f"Decoded: {decoded}")
     print(f"Match: {'OK' if test_text.strip() == decoded.strip() else 'NO'}")
     
-    # Tokenize data
     print("Tokenizing data...")
     all_tokens = []
     for text in tqdm(full_corpus, desc="Encoding texts"):
         tokens = tokenizer.encode(text, add_special_tokens=False)
         all_tokens.extend(tokens)
         
-        # Memory management
         if len(all_tokens) % 1000000 == 0:
             cleanup_memory()
     
@@ -930,11 +897,9 @@ def train(
     print(f"Val tokens: {len(val_tokens):,}")
     print(f"Compression ratio: {len(' '.join(full_corpus)) / len(all_tokens):.2f} chars/token")
     
-    # Cleanup
     del all_tokens, full_corpus
     cleanup_memory()
     
-    # Create datasets
     train_dataset = Dataset(train_tokens, MODEL_CONFIG['block_size'])
     val_dataset = Dataset(val_tokens, MODEL_CONFIG['block_size'])
     
@@ -990,11 +955,9 @@ def train(
             TRAINING_CONFIG['max_epochs'] = fresh_epochs
             print(f"Training for {fresh_epochs} fresh epochs")
     
-    # DeepSpeed vs Standard Training Setup
     if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-        print(f"\nSetting up DeepSpeed for RTX 3050...")
+        print(f"\nSetting up DeepSpeed for GPU")
         
-        # Create DeepSpeed config
         if TRAINING_CONFIG['deepspeed_config_path'] is None:
             deepspeed_config = create_deepspeed_config(TRAINING_CONFIG, MODEL_CONFIG)
             print(f"Using auto-generated DeepSpeed config:")
@@ -1006,14 +969,12 @@ def train(
             with open(TRAINING_CONFIG['deepspeed_config_path'], 'r') as f:
                 deepspeed_config = json.load(f)
         
-        # Initialize DeepSpeed
         model_engine, optimizer, _, scheduler = deepspeed.initialize(
             model=model,
             model_parameters=model.parameters(),
             config=deepspeed_config
         )
         
-        # DeepSpeed handles everything
         model = model_engine
         scaler = None  # DeepSpeed handles mixed precision
         
@@ -1025,7 +986,6 @@ def train(
     else:
         print(f"\nUsing standard PyTorch training...")
         
-        # Standard optimizer
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=TRAINING_CONFIG['learning_rate'],
@@ -1074,13 +1034,12 @@ def train(
                 # Use the maximum of loaded_epoch and calculated_epoch to be safe
                 start_epoch = max(loaded_epoch, calculated_epoch)
                 
-                print(f"  >>> Using epoch: {start_epoch}")
-                print(f"  >>> This epoch has completed {global_step % steps_per_epoch if steps_per_epoch > 0 else 0} steps.")
+                print(f"Using epoch: {start_epoch}")
+                print(f"This epoch has completed {global_step % steps_per_epoch if steps_per_epoch > 0 else 0} steps.")
                 
                 print(f"Resume successful: Epoch {start_epoch}, Step {global_step}, Best Val Loss: {best_val_loss:.4f}")
                 print(f"Estimated steps per epoch: {steps_per_epoch}")
                 
-                # Recreate DataLoader with proper seed for resume
                 print(f"Recreating DataLoader with seed based on global_step: {global_step}")
                 train_loader = DataLoader(
                     train_dataset, 
@@ -1100,23 +1059,18 @@ def train(
                 global_step = 0
                 best_val_loss = float('inf')
     
-    # Training state is already initialized at function start
-    
-    # Early stopping
     early_stopping = EarlyStopping(
         patience=TRAINING_CONFIG['early_stopping_patience'],
         min_delta=TRAINING_CONFIG['early_stopping_min_delta'],
         restore_best_weights=True
     )
     
-    # Training loop
     print(f"\nStarting training from epoch {start_epoch + 1}")
     print(f"Max epochs: {TRAINING_CONFIG['max_epochs']}")
     print(f"Early stopping patience: {TRAINING_CONFIG['early_stopping_patience']}")
     print(f"Global step: {global_step}")
     print("="*80)
     
-    # Create necessary directories
     os.makedirs("checkpoints", exist_ok=True)
     print("Checkpoint directory created: checkpoints/")
     
@@ -1154,16 +1108,13 @@ def train(
             
             # Backward pass
             if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                # DeepSpeed backward
                 model.backward(loss)
             else:
-                # Standard backward
                 if scaler:
                     scaler.scale(loss).backward()
                 else:
                     loss.backward()
             
-            # Update metrics
             if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
                 batch_loss = loss.item()
             else:
@@ -1173,7 +1124,6 @@ def train(
             num_train_batches += 1
             batch_counter += 1
             
-            # Update progress
             if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
                 current_lr = model.get_lr()[0] if hasattr(model, 'get_lr') else TRAINING_CONFIG['learning_rate']
             else:
@@ -1190,10 +1140,8 @@ def train(
             # Optimizer step
             if (batch_idx + 1) % TRAINING_CONFIG['accumulation_steps'] == 0:
                 if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                    # DeepSpeed step
                     model.step()
                 else:
-                    # Standard step
                     if scaler:
                         scaler.unscale_(optimizer)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
@@ -1209,7 +1157,6 @@ def train(
                 # Increment global_step for actual training steps
                 global_step += 1
                 
-                # Logging
                 if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb:
                     wandb.log({
                         'train_loss_step': batch_loss,
@@ -1218,7 +1165,6 @@ def train(
                         'epoch': epoch + 1
                     })
                 
-                # Quick evaluation
                 if global_step % TRAINING_CONFIG['eval_steps'] == 0 and global_step > 0:
                     print(f"\nQuick eval at step {global_step}")
                     model.eval()
@@ -1250,7 +1196,6 @@ def train(
                     model.train()
                     cleanup_memory()
                 
-                # Checkpoint saving
                 if global_step % TRAINING_CONFIG['checkpoint_steps'] == 0 and global_step > 0:
                     checkpoint_path = f"checkpoints/checkpoint_step_{global_step}.safetensors"
                     save_checkpoint(
@@ -1259,7 +1204,6 @@ def train(
                         checkpoint_path=checkpoint_path
                     )
             
-            # Less frequent memory cleanup to avoid performance hit
             if global_step % 50 == 0: 
                 cleanup_memory()
                 
@@ -1271,7 +1215,6 @@ def train(
         print(f"\nEpoch {epoch + 1} completed: Train Loss: {avg_train_loss:.4f}")
         print(f"Memory after epoch: {get_memory_usage()}")
         
-        # Comprehensive evaluation
         if (epoch + 1) % TRAINING_CONFIG['eval_interval'] == 0:
             print(f"\n{'='*80}")
             print(f"EVALUATION - Epoch {epoch + 1}")
@@ -1289,7 +1232,6 @@ def train(
             print(f"   Learning Rate: {current_lr:.2e}")
             print(f"   Memory: {get_memory_usage()}")
             
-            # Generation sample
             if 'generation' in metrics and metrics['generation']['samples']:
                 sample = metrics['generation']['samples'][0]
                 print(f"   GENERATION SAMPLE:")
@@ -1298,7 +1240,6 @@ def train(
             
             print(f"{'='*80}")
             
-            # Wandb logging
             if use_wandb:
                 wandb.log({
                     'epoch': epoch + 1,
@@ -1309,7 +1250,6 @@ def train(
                     'global_step': global_step
                 })
             
-            # Save best model
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 save_checkpoint(
@@ -1319,7 +1259,6 @@ def train(
                 )
                 print(f"New best model saved! Val loss: {val_loss:.4f}")
             
-            # Early stopping
             if early_stopping(val_loss, model):
                 print(f"\nEarly stopping triggered after {epoch + 1} epochs!")
                 print(f"Best validation loss: {early_stopping.best_loss:.4f}")
@@ -1327,7 +1266,6 @@ def train(
             
             cleanup_memory()
         
-        # Regular checkpoint
         if (epoch + 1) % TRAINING_CONFIG['save_interval'] == 0:
             checkpoint_path = f"checkpoints/checkpoint_epoch_{epoch + 1}.safetensors"
             save_checkpoint(
@@ -1345,7 +1283,6 @@ def train(
     
     return model
 
-# Utility functions (unchanged but optimized)
 def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step, 
                    best_val_loss, best_perplexity, config, tokenizer_path, 
                    checkpoint_path="checkpoint.safetensors"):
@@ -1355,15 +1292,12 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
     
     os.makedirs(os.path.dirname(checkpoint_path) if os.path.dirname(checkpoint_path) else ".", exist_ok=True)
     
-    # DeepSpeed checkpoint saving
     if DEEPSPEED_AVAILABLE and hasattr(model, 'save_checkpoint'):
-        # DeepSpeed handles checkpoint saving
         checkpoint_dir = os.path.dirname(checkpoint_path)
         checkpoint_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
         
         model.save_checkpoint(checkpoint_dir, checkpoint_name)
         
-        # Save additional metadata
         metadata = {
             'epoch': str(epoch),
             'global_step': str(global_step),
@@ -1384,7 +1318,6 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
         print(f"DeepSpeed checkpoint saved: {checkpoint_name}")
         
     else:
-        # Standard SafeTensors saving
         if not SAFETENSORS_AVAILABLE:
             raise ImportError("SafeTensors not available. Install with: pip install safetensors")
         
@@ -1414,7 +1347,6 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
         # Save to SafeTensors
         save_file(model_state, checkpoint_path, metadata=metadata)
         
-        # Save additional training state
         if optimizer is not None:
             additional_state_path = checkpoint_path.replace('.safetensors', '_state.pt')
             additional_state = {
@@ -1496,7 +1428,6 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
     return resume_info
 
 def find_latest_checkpoint(checkpoint_dir="checkpoints"):
-    """Find latest checkpoint"""
     if not os.path.exists(checkpoint_dir):
         return None
     
@@ -1531,7 +1462,6 @@ def load_and_preprocess_data(max_samples=150000):
         if len(text) > 100:  # Longer texts for better training
             processed_texts.append(text)
         
-        # Memory management
         if i % 10000 == 0:
             cleanup_memory()
     
@@ -1544,22 +1474,16 @@ def generate(text,
              max_new_tokens=100,
              temperature=0.8,
              top_p=0.9,
-             top_k=50,
+             top_k=10,
              device=None,
              use_half_precision=True,
              silent=True):
 
-    # Device setup
     if device is None:
         if torch.cuda.is_available():
             device = torch.device('cuda')
         else:
             device = torch.device('cpu')
-    
-    # Load tokenizer (suppress output)
-    import sys
-    from contextlib import redirect_stdout, redirect_stderr
-    import os
     
     if silent:
         with open(os.devnull, 'w') as devnull:
@@ -1568,7 +1492,6 @@ def generate(text,
     else:
         tokenizer = create_tokenizer(model_path=tokenizer_path)
     
-    # Load model
     if not model_path.endswith('.safetensors'):
         model_path = model_path.replace('.pt', '.safetensors')
     
@@ -1582,7 +1505,6 @@ def generate(text,
     # Disable FlashAttention for generation to avoid dtype issues
     config['use_flash_attention'] = False
     
-    # Create model
     model = Transformer(config, tokenizer).to(device)
     
     # Load weights
@@ -1603,7 +1525,6 @@ def generate(text,
     
     model.eval()
     
-    # Generate
     with torch.no_grad():
         try:
             generated_text = model.generate_from_prompt(
@@ -1626,29 +1547,23 @@ def generate(text,
     
     cleanup_memory()
     
-    # Only print the result, nothing else
     if not silent:
         print(generated_text)
     
     return generated_text
 
-if __name__ == "__main__":
-    # Suppress unnecessary warnings
+if __name__ == "__main__":  
     import os
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
     os.environ['TRANSFORMERS_VERBOSITY'] = 'error'  # Suppress transformers warnings
     
     try:
-        model = train()
-        #model = train(auto_resume=True, use_wandb=False)  # Resume from latest checkpoint
+        #model = train()
+        model = train(auto_resume=True)  # Resume from latest checkpoint
         
         # Example usage:
         # model = train(resume_from_checkpoint="checkpoints/checkpoint_step_1000.safetensors")
         # model = train(pretrained_model_path="checkpoints/best_model_120m_8gb.safetensors", fresh_epochs=10)
-        
-        # Silent generation example:
-        # result = generate("Türkiye'nin başkenti", silent=True)
-        # print(result)  # Only print the result
         
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")

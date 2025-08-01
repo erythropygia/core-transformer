@@ -7,18 +7,7 @@ import sentencepiece as spm
 from pathlib import Path
 from typing import List, Dict, Optional
 
-# Logging ayarları
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('tokenizer_training.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-class TurkishTokenizerTrainer:
+class TokenizerTrainer:
     def __init__(self, 
                  vocab_size: int = 32000,
                  model_type: str = 'bpe',
@@ -31,7 +20,6 @@ class TurkishTokenizerTrainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
         
-        # 🇹🇷 Optimized SentencePiece parameters for Turkish
         self.sp_params = {
             'model_type': model_type,
             'vocab_size': vocab_size,
@@ -59,36 +47,30 @@ class TurkishTokenizerTrainer:
         }
         
         self.special_tokens = [
-            # === Document Structure (4 tokens) ===
             '<|beginoftext|>',      # Document/text beginning marker
             '<|endoftext|>',        # Document/text end marker
             '<|startoftext|>',      # Alternative start marker
             '<newline>',            # Explicit newline token
             
-            # === Core Functionality (5 tokens) ===
             '<mask>',               # Masked Language Modeling
             '<turkish>',            # Language identifier
             '<instruction>',        # Instruction tuning start
             '</instruction>',       # Instruction tuning end
             '<context>',           # Context marker
             
-            # === Chat & Dialog (4 tokens) ===
             '<|system|>',          # System prompt
             '<|user|>',            # User message  
             '<|assistant|>',       # Assistant response
             '<|end|>',             # Turn end marker
             
-            # === Safety & Control (3 tokens) ===
             '<safe>',              # Safe content marker
             '<unsafe>',            # Unsafe content marker
             '<filtered>',          # Filtered content marker
             
-            # === Task Specific (3 tokens) ===
             '<translate>',         # Translation task marker
             '<summarize>',         # Summarization task marker
             '<classify>',          # Classification task marker
             
-            # === Future Reserve (3 tokens) ===
             '<reserved1>',         # Future features
             '<reserved2>',         # Function calling, tools etc.
             '<reserved3>',         # Multi-modal extensions
@@ -102,13 +84,13 @@ class TurkishTokenizerTrainer:
             raise FileNotFoundError(f"Corpus file not found: {corpus_file}")
         
         file_size = corpus_file.stat().st_size / (1024*1024*1024)  # GB
-        logger.info(f"Corpus found: {corpus_file}")
-        logger.info(f"File size: {file_size:.2f} GB")
+        print(f"Corpus found: {corpus_file}")
+        print(f"File size: {file_size:.2f} GB")
         
         return str(corpus_file)
 
     def preprocess_corpus(self, corpus_file: str) -> str:
-        logger.info("Corpus preprocessing starting...")
+        print("Corpus preprocessing starting...")
         
         processed_file = self.output_dir / 'processed_corpus.txt'
         total_lines = 0
@@ -125,15 +107,15 @@ class TurkishTokenizerTrainer:
                         valid_lines += 1
                     
                     if total_lines % 100000 == 0:
-                        logger.info(f"{total_lines:,} lines processed, {valid_lines:,} valid lines")
+                        print(f"{total_lines:,} lines processed, {valid_lines:,} valid lines")
                         
                     # Memory efficiency for batch processing
                     if total_lines % 1000000 == 0:
-                        logger.info(f"{total_lines//1000000}M lines completed")
+                        print(f"{total_lines//1000000}M lines completed")
         
         retention_rate = (valid_lines / total_lines) * 100
-        logger.info(f"Preprocessing completed:")
-        logger.info(f"{valid_lines:,}/{total_lines:,} lines retained ({retention_rate:.1f}%)")
+        print(f"Preprocessing completed:")
+        print(f"{valid_lines:,}/{total_lines:,} lines retained ({retention_rate:.1f}%)")
         return str(processed_file)
 
     def _is_high_quality_text(self, text: str) -> bool:
@@ -172,7 +154,7 @@ class TurkishTokenizerTrainer:
 
     def train_tokenizer(self, corpus_file: str) -> Dict[str, str]:
 
-        logger.info("Tokenizer training starting...")
+        print("Tokenizer training starting...")
         
         model_prefix = str(self.output_dir / 'turkish_tokenizer')
         
@@ -184,31 +166,30 @@ class TurkishTokenizerTrainer:
         })
         
         # Critical parameters
-        logger.info("Training parameters:")
-        logger.info(f"Vocabulary size: {sp_params['vocab_size']:,}")
-        logger.info(f"Model type: {sp_params['model_type'].upper()}")
-        logger.info(f"Character coverage: {sp_params['character_coverage']}")
-        logger.info(f"Special token count: {len(self.special_tokens)}")
-        logger.info(f"Thread count: {sp_params['num_threads']}")
+        print("Training parameters:")
+        print(f"Vocabulary size: {sp_params['vocab_size']:,}")
+        print(f"Model type: {sp_params['model_type'].upper()}")
+        print(f"Character coverage: {sp_params['character_coverage']}")
+        print(f"Special token count: {len(self.special_tokens)}")
+        print(f"Thread count: {sp_params['num_threads']}")
         
         try:
-            logger.info("SentencePiece training starting...")
+            print("SentencePiece training starting...")
             start_time = time.time()
             
             spm.SentencePieceTrainer.train(**sp_params)
             
             training_time = time.time() - start_time
-            logger.info(f"Tokenizer training completed! Time: {training_time:.2f}s")
+            print(f"Tokenizer training completed! Time: {training_time:.2f}s")
             
             # Check output files
             model_file = f"{model_prefix}.model"    
             vocab_file = f"{model_prefix}.vocab"
             
             if os.path.exists(model_file) and os.path.exists(vocab_file):
-                logger.info(f"Model file: {model_file}")
-                logger.info(f"Vocabulary file: {vocab_file}")
+                print(f"Model file: {model_file}")
+                print(f"Vocabulary file: {vocab_file}")
                 
-                # Analyze model quality
                 self._analyze_tokenizer_quality(model_file)
                 
                 return {
@@ -220,7 +201,7 @@ class TurkishTokenizerTrainer:
                 raise FileNotFoundError("Model files could not be created")
                 
         except Exception as e:
-            logger.error(f"Tokenizer training failed: {e}")
+            print(f"Tokenizer training failed: {e}")
             raise
 
     def _analyze_tokenizer_quality(self, model_file: str) -> None:
@@ -228,8 +209,8 @@ class TurkishTokenizerTrainer:
             sp = spm.SentencePieceProcessor()
             sp.load(model_file)
             
-            logger.info("Tokenizer quality analysis:")
-            logger.info(f"Total vocabulary: {sp.vocab_size():,}")
+            print("Tokenizer quality analysis:")
+            print(f"Total vocabulary: {sp.vocab_size():,}")
             
             # Check special tokens
             special_count = 0
@@ -240,7 +221,7 @@ class TurkishTokenizerTrainer:
                     special_count += 1
                     special_ids.append(f"{token}:{token_id}")
             
-            logger.info(f"Special tokens: {special_count}/{len(self.special_tokens)} successful")
+            print(f"Special tokens: {special_count}/{len(self.special_tokens)} successful")
             
             # Check core tokens
             core_tokens = {
@@ -250,9 +231,9 @@ class TurkishTokenizerTrainer:
                 '<pad>': sp.pad_id()
             }
             
-            logger.info("Core tokens:")
+            print("Core tokens:")
             for token, token_id in core_tokens.items():
-                logger.info(f"    {token}: ID {token_id}")
+                print(f"    {token}: ID {token_id}")
             
             # Turkish test sentences
             test_sentences = [
@@ -261,97 +242,51 @@ class TurkishTokenizerTrainer:
                 "Yapay zeka teknolojisi hızla gelişiyor."
             ]
             
-            logger.info("Tokenization test:")
+            print("Tokenization test:")
             for sentence in test_sentences:
                 tokens = sp.encode(sentence, out_type=str)
                 token_count = len(tokens)
-                logger.info(f"     '{sentence}' -> {token_count} tokens")
+                print(f"     '{sentence}' -> {token_count} tokens")
             
             # Efficiency score (average chars per token)
             total_chars = sum(len(s) for s in test_sentences)
             total_tokens = sum(len(sp.encode(s)) for s in test_sentences)
             efficiency = total_chars / total_tokens if total_tokens > 0 else 0
             
-            logger.info(f"Encoding efficiency: {efficiency:.2f} characters/token")
+            print(f"Encoding efficiency: {efficiency:.2f} characters/token")
             
             if efficiency >= 3.0:
-                logger.info("Excellent efficiency for Turkish!")
+                print("Excellent efficiency")
             elif efficiency >= 2.5:
-                logger.info("Good efficiency")
+                print("Good efficiency")
             else:
-                logger.info("Low efficiency - consider retraining")
+                print("Low efficiency - consider retraining")
                 
         except Exception as e:
-            logger.warning(f"Quality analysis failed: {e}")
-
-    def save_config(self, result: Dict[str, str]) -> str:
-
-        config = {
-            'model_info': {
-                'name': 'Turkish SentencePiece Tokenizer',
-                'version': '1.0',
-                'language': 'Turkish',
-                'created_at': time.strftime('%Y-%m-%d %H:%M:%S')
-            },
-            'parameters': {
-                'vocab_size': self.vocab_size,
-                'model_type': self.model_type,
-                'character_coverage': self.character_coverage,
-            },
-            'special_tokens': {
-                'count': len(self.special_tokens),
-                'tokens': self.special_tokens
-            },
-            'files': result,
-            'usage': {
-                'loading': f"sp.load('{result['model']}')",
-                'encoding': "tokens = sp.encode('metin', out_type=str)",
-                'decoding': "text = sp.decode(tokens)"
-            }
-        }
-        
-        config_file = self.output_dir / 'tokenizer_config.json'
-        with open(config_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-        
-        logger.info(f"Configuration saved: {config_file}")
-        return str(config_file)
+            print.warning(f"Quality analysis failed: {e}")
 
     def run_training(self) -> Dict[str, str]:
-        logger.info("Tokenizer Training Pipeline")
-        logger.info("=" * 60)
-        
+        print("Tokenizer Training Pipeline")
         try:
-            # 1. Check corpus file
-            logger.info("Corpus file checking...")
+            print("Corpus file checking...")
             corpus_file = self.get_corpus_file()
             
-            # 2. Preprocess corpus
-            logger.info("High quality corpus preparing...")
+            print("High quality corpus preparing...")
             processed_corpus = self.preprocess_corpus(corpus_file)
             
-            # 3. Train tokenizer
-            logger.info("Tokenizer training...")
+            print("Tokenizer training...")
             result = self.train_tokenizer(processed_corpus)
             
-            # 4. Save configuration
-            logger.info("Configuration saving...")
-            config_file = self.save_config(result)
-            result['config'] = config_file
-            
-            # 5. Summary
-            logger.info("Training completed successfully!")
-            logger.info("=" * 60)
-            logger.info(f"Model file: {result['model']}")
-            logger.info(f"Vocabulary file: {result['vocab']}")  
-            logger.info(f"Configuration: {result['config']}")
-            logger.info(f"Total training time: {result['training_time']:.2f}s")
-            logger.info("3 reserved tokens for future extensions!")
+            print("Training completed successfully!")
+            print(f"Model file: {result['model']}")
+            print(f"Vocabulary file: {result['vocab']}")  
+            print(f"Configuration: {result['config']}")
+            print(f"Total training time: {result['training_time']:.2f}s")
             
             return result
             
         except Exception as e:
-            logger.error(f"Training failed: {e}")
+            print(f"Training failed: {e}")
             raise
 
 def main():
@@ -369,7 +304,7 @@ def main():
     
     args = parser.parse_args()
     
-    trainer = TurkishTokenizerTrainer(
+    trainer = TokenizerTrainer(
         vocab_size=args.vocab_size,
         model_type=args.model_type,
         character_coverage=args.coverage,
