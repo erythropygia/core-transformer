@@ -20,9 +20,10 @@ def generate_text():
         try:
             result = generate(
                 prompt, 
-                model_path="checkpoints/checkpoint_step_56500.safetensors",
+                model_path="checkpoints/checkpoint_step_60000.safetensors",
                 max_new_tokens=100,
                 temperature=0.9,
+                top_k=10,
                 top_p=0.90,
                 silent=True
             )
