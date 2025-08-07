@@ -7,21 +7,21 @@ os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
 
 def generate_text():
     test_prompts = [
-        "Kuantum mekaniğinde hamilton işlemcisi, kinetik enerjilerin toplamına ve sistemdeki tüm parçacıklar için potansiyel enerjilere karşılık gelen",
-        "Mustafa Kemal Atatürk'ün en bilinen sözlerinden biri olan 'Egemenlik, kayıtsız şartsız milletindir' ifadesi, Türkiye Cumhuriyeti'nin kuruluş felsefesini yansıtır. Bu sözün anlamı nedir?",
+        "Kuantum mekaniğinde hamilton işlemcisi",
+        "Amerika ile Çin arasındaki mesafe",
     ]
     
     for prompt in test_prompts:
-        print(f"\nPrompt: {prompt}")
+        print(f"\nPrompt: {prompt}\n\n")
         print("Generated:", end=" ")
         
         try:
             result = generate(
                 prompt, 
-                model_path="checkpoints/checkpoint_step_61000.safetensors",
-                max_new_tokens=50,
+                model_path="checkpoints/checkpoint_step_71500.safetensors",
+                max_new_tokens=75,
                 temperature=0.9,
-                top_k=15,
+                top_k=10,
                 top_p=0.9,
                 silent=True
             )
