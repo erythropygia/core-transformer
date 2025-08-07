@@ -1,30 +1,28 @@
-import sys
 import os
-sys.path.append('transformers_train')
-
-from transformers_train_deepspeed import generate
+from transformer.train import generate      
+from transformer.tokenizer import create_tokenizer
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+os.environ['TRANSFORMERS_VERBOSITY'] = 'error'  
 
 def generate_text():
     test_prompts = [
-        "Bu olay TBMM'de tartışıldıktan sonra",
-        "Ekrem İmamoğlu, İstanbul Büyükşehir Belediye Başkanı olarak",
+        "Kuantum mekaniğinde hamilton işlemcisi",
+        "Amerika ile Çin arasındaki mesafe",
     ]
     
     for prompt in test_prompts:
-        print(f"\nPrompt: {prompt}")
+        print(f"\nPrompt: {prompt}\n\n")
         print("Generated:", end=" ")
         
         try:
             result = generate(
                 prompt, 
-                model_path="checkpoints/checkpoint_step_60000.safetensors",
-                max_new_tokens=100,
+                model_path="checkpoints/checkpoint_step_71500.safetensors",
+                max_new_tokens=75,
                 temperature=0.9,
                 top_k=10,
-                top_p=0.90,
+                top_p=0.9,
                 silent=True
             )
             print(result)
