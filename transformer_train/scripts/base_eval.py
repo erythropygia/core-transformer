@@ -24,7 +24,7 @@ from safetensors import safe_open
 from safetensors.torch import load_file
 
 # -----------------------------------------------------------------------------
-# nanochat specific function dealing with I/O etc.
+# Specific function dealing with I/O etc.
 
 # ~162MB of data needed to evaluate the CORE metric
 EVAL_BUNDLE_URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/eval_bundle.zip"

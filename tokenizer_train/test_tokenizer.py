@@ -183,7 +183,7 @@ def test_tokenizer(tokenizer_dir=None):
         print(f"   Token counts: {base_len} → {plural_len} → {poss_len} → {loc_len}")
     print()
     
-    # Chat format test (nanochat-style)
+    # Chat format test
     print("Chat Format Test:")
     print("-" * 40)
     

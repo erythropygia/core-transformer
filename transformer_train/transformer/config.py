@@ -32,7 +32,7 @@ TRAINING_CONFIG = {
     'eval_generation_samples': 3, 
     'max_eval_batches': 50,
     
-    # Muon optimizer settings (nanochat-style)
+    # Muon optimizer settings
     'use_muon_optimizer': True,  # Use Muon + AdamW with separate learning rates
     'unembedding_lr': 0.004,  # Learning rate for lm_head
     'embedding_lr': 0.2,  # Learning rate for token embeddings

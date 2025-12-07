@@ -161,7 +161,7 @@ def train(
     if use_parquet_streaming:
         print(f"Using parquet streaming dataloader from: {data_dir}")
         try:
-            # Use streaming dataloader (nanochat-style)
+            # Use streaming dataloader
             dataloader_resume_state_dict = None  # Will be set from checkpoint if resuming
             
             train_loader = tokenizing_distributed_data_loader_with_state(
@@ -376,7 +376,7 @@ def train(
         use_muon = TRAINING_CONFIG.get('use_muon_optimizer', False)
         
         if use_muon:
-            print("Using Muon optimizer with separate learning rates (nanochat-style)...")
+            print("Using Muon optimizer with separate learning rates")
             optimizers = model.setup_optimizers(
                 unembedding_lr=TRAINING_CONFIG.get('unembedding_lr', 0.004),
                 embedding_lr=TRAINING_CONFIG.get('embedding_lr', 0.2),
@@ -961,7 +961,7 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
             'tokenizer_path': tokenizer_path,
             'training_config': json.dumps(TRAINING_CONFIG),
             'model_config': json.dumps(MODEL_CONFIG),
-            'weight_tying': 'false',  # Untied weights (nanochat-style)
+            'weight_tying': 'false',  # Untied weights
             'deepspeed': 'false',
             'model_type': 'Transformer'
         }
