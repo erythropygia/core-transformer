@@ -92,7 +92,7 @@ TRAINING_STAGE_DATASET_MAP = {
 # Kullanım: training_stage='base' olduğunda bu config kullanılır
 BASE_DATASET_CONFIG = {
     'type': 'parquet',  # Parquet files from lumees/turkish-corpus-100b
-    'data_dir': 'base_data',  # Directory containing parquet files
+    'data_dir': 'dataset/base_data',  # Directory containing parquet files
     'text_column': 'text',  # Column name in parquet files
     'max_samples': None,  # None = use all
 }
@@ -104,26 +104,26 @@ MID_DATASET_CONFIG = {
     'datasets': [
         {
             'type': 'wikipedia', 
-            'data_dir': 'mid_data/wikipedia',  # Parquet files directory
+            'data_dir': 'dataset/mid_data/wikipedia',  # Parquet files directory
             'text_column': 'text',
             'max_samples': None  # None = use all
         },
         {
             'type': 'news', 
-            'data_dir': 'mid_data/news',  # Parquet files directory
+            'data_dir': 'dataset/mid_data/news',  # Parquet files directory
             'text_column': 'text',
             'max_samples': None  # None = use all
         },
         {
             'type': 'qa', 
-            'data_dir': 'mid_data/qa',  # Parquet files directory
+            'data_dir': 'dataset/mid_data/qa',  # Parquet files directory
             'question_column': 'question',
             'answer_column': 'answer',
             'max_samples': None  # None = use all
         },
         {
             'type': 'math', 
-            'data_dir': 'mid_data/math',  # Parquet files directory
+            'data_dir': 'dataset/mid_data/math',  # Parquet files directory
             'question_column': 'soru',
             'answer_column': 'solution',
             'max_samples': None  # None = use all
