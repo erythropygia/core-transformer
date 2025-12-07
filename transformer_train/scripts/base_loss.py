@@ -7,11 +7,11 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from transformer.common import compute_init, print0, compute_cleanup, autodetect_device_type
-from transformer.dataloader import tokenizing_distributed_data_loader
+from transformer.data.dataloader import tokenizing_distributed_data_loader
 from transformer.tokenizer import create_tokenizer, get_token_bytes
-from transformer.loss_eval import evaluate_bpb
-from transformer.engine import Engine
-from transformer.transformer_block import Transformer
+from transformer.training.loss_eval import evaluate_bpb
+from transformer.model.engine import Engine
+from transformer.model.transformer_block import Transformer
 from transformer.config import MODEL_CONFIG
 from safetensors import safe_open
 from safetensors.torch import load_file
@@ -29,7 +29,7 @@ ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type
 
 # Load model
 if checkpoint_path and os.path.exists(checkpoint_path):
-    from transformer.train import load_checkpoint
+    from transformer.training.train import load_checkpoint
     model, tokenizer, meta = load_model_from_checkpoint(checkpoint_path, device)
     sequence_len = meta.get("model_config", {}).get("block_size", 1024)
 else:

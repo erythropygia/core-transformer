@@ -12,17 +12,17 @@ from contextlib import redirect_stdout, redirect_stderr
 
 from transformer_train.deepspeed_config.deepspeed_config import create_deepspeed_config
 
-from .utils import EarlyStopping, cleanup_memory, evaluate_model_comprehensive, get_cosine_schedule_with_warmup, get_gpu_memory_info, get_memory_usage, get_memory_usage_safe
-from .config import (
+from ..utils import EarlyStopping, cleanup_memory, evaluate_model_comprehensive, get_cosine_schedule_with_warmup, get_gpu_memory_info, get_memory_usage, get_memory_usage_safe
+from ..config import (
     MODEL_CONFIG, TRAINING_CONFIG, TEST_PROMPTS, 
     BASE_DATASET_CONFIG, MID_DATASET_CONFIG, SFT_DATASET_CONFIG,
     TRAINING_STAGE_DATASET_MAP
 )
-from .tokenizer import create_tokenizer
-from .dataset import TransformerDataset, load_and_preprocess_data
-from .dataloader import tokenizing_distributed_data_loader_with_state, tokenizing_distributed_data_loader
-from .dataset_utils import create_mid_datasets, create_sft_datasets
-from .transformer_block import Transformer
+from ..tokenizer import create_tokenizer
+from ..data.dataset import TransformerDataset, load_and_preprocess_data
+from ..data.dataloader import tokenizing_distributed_data_loader_with_state, tokenizing_distributed_data_loader
+from ..data.dataset_utils import create_mid_datasets, create_sft_datasets
+from ..model.transformer_block import Transformer
 
 try:
     import deepspeed
@@ -888,7 +888,7 @@ def train(
     
     # Log to report
     try:
-        from .report import get_report
+        from ..report import get_report
         training_stage = TRAINING_CONFIG.get('training_stage', 'base')
         get_report().log(section=f"{training_stage.capitalize()} model training", data=[
             {

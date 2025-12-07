@@ -5,7 +5,7 @@ from tqdm import tqdm
 from datasets import load_dataset
 import unicodedata
 
-from .utils import cleanup_memory
+from ..utils import cleanup_memory
 
 class TransformerDataset(Dataset):
     def __init__(self, tokens, block_size, stride=None):

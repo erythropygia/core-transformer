@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from transformer.common import get_base_dir, print0, autodetect_device_type, download_file_with_lock
 from transformer.tokenizer import create_tokenizer
-from transformer.transformer_block import Transformer
-from transformer.core_eval import evaluate_task
+from transformer.model.transformer_block import Transformer
+from transformer.eval.core_eval import evaluate_task
 from transformer.config import MODEL_CONFIG
 from safetensors import safe_open
 from safetensors.torch import load_file

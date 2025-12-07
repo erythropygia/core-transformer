@@ -4,9 +4,9 @@ import torch
 import pyarrow.parquet as pq
 from typing import Optional
 
-from .common import get_dist_info
+from ..common import get_dist_info
 from .dataset_utils import list_parquet_files
-from .tokenizer import create_tokenizer
+from ..tokenizer import create_tokenizer
 
 
 def tokenizing_distributed_data_loader_with_state(

@@ -10,8 +10,8 @@ import torch
 import torch.distributed as dist
 
 from transformer.common import compute_init, compute_cleanup, get_dist_info, print0, autodetect_device_type
-from transformer.engine import Engine
-from transformer.transformer_block import Transformer
+from transformer.model.engine import Engine
+from transformer.model.transformer_block import Transformer
 from transformer.tokenizer import create_tokenizer
 from transformer.config import MODEL_CONFIG
 from safetensors import safe_open
