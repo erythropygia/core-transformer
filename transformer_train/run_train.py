@@ -12,6 +12,15 @@ Usage:
     python run_train.py --batch-size 8 --learning-rate 6e-4
 """
 
+import sys
+from pathlib import Path
+
+# Add parent directory to path so imports work when running script directly
+script_dir = Path(__file__).parent
+project_root = script_dir.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+    
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -19,7 +28,7 @@ import torch
 from contextlib import nullcontext
 import argparse
 
-from transformer_train.transformer.train import train
+from transformer_train.transformer.training.train import train
 from transformer_train.transformer.common import compute_init, compute_cleanup, print0, autodetect_device_type
 from transformer_train.transformer.config import MODEL_CONFIG, TRAINING_CONFIG
 
