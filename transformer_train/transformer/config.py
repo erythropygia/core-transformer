@@ -2,17 +2,21 @@ MODEL_CONFIG = {
     'n_embd': 768,          # 768 embedding dimension
     'n_layer': 14,          # 14 transformer layer (~120M parameters)
     'n_head': 12,           # 12 attention head (768 ÷ 12 = 64 head_dim)
+    'n_kv_head': 12,        # number of key/value heads (GQA: can be less than n_head for efficiency)
     'block_size': 1024,     # 1024 context window
-    'dropout': 0.1,         # Dropout
+    'dropout': 0.1,         # Dropout (not used, kept for compatibility)
     'vocab_size': None,     # tokenizer'dan alınacak
-    'use_flash_attention': True, 
+    'use_flash_attention': True,  # Not used (uses PyTorch's scaled_dot_product_attention)
     'use_gradient_checkpointing': True,  
     'use_selective_checkpointing': True, 
 }
 
 TRAINING_CONFIG = {
+    # Training stage: 'base' (pretraining), 'mid' (mid-training), 'sft' (chat fine-tuning)
+    'training_stage': 'base',  # Config'den hangi stage'in hangi dataset ile olacağını belirleyin
+    
     'batch_size': 4,       
-    'learning_rate': 6e-4,  
+    'learning_rate': 6e-4,  # Legacy: used if use_muon_optimizer is False
     'weight_decay': 0.1,   
     'beta1': 0.9,
     'beta2': 0.95,
@@ -26,7 +30,13 @@ TRAINING_CONFIG = {
     'compile_model': False,
     'scheduler_type': 'cosine_with_warmup',
     'eval_generation_samples': 3, 
-    'max_eval_batches': 50, 
+    'max_eval_batches': 50,
+    
+    # Muon optimizer settings (nanochat-style)
+    'use_muon_optimizer': True,  # Use Muon + AdamW with separate learning rates
+    'unembedding_lr': 0.004,  # Learning rate for lm_head
+    'embedding_lr': 0.2,  # Learning rate for token embeddings
+    'matrix_lr': 0.02,  # Learning rate for transformer matrix parameters (Muon) 
     
     'use_cpu_offload': False,     
     'use_activation_checkpointing': True,
@@ -65,3 +75,47 @@ TEST_PROMPTS = [
     "Yapay zeka teknolojisi",
     "İstanbul Boğazı"
 ]
+
+# -----------------------------------------------------------------------------
+# Dataset Configurations
+# -----------------------------------------------------------------------------
+
+# Training Stage -> Dataset Mapping
+# Her training stage için hangi dataset config'inin kullanılacağını belirleyin
+TRAINING_STAGE_DATASET_MAP = {
+    'base': 'BASE_DATASET_CONFIG',  # Pretraining: parquet streaming
+    'mid': 'MID_DATASET_CONFIG',    # Mid-training: structured tasks (Wikipedia, news, QA, math)
+    'sft': 'SFT_DATASET_CONFIG',    # SFT: conversation format (chat)
+}
+
+# Base Training (Pretraining) Dataset Config
+# Kullanım: training_stage='base' olduğunda bu config kullanılır
+BASE_DATASET_CONFIG = {
+    'type': 'parquet',  # 'parquet' or 'huggingface'
+    'data_dir': 'base_data',  # Directory containing parquet files
+    'huggingface_dataset': None,  # If type is 'huggingface', specify dataset name
+    'huggingface_config': None,  # Optional config name
+    'text_column': 'text',  # Column name in parquet/dataset
+    'max_samples': None,  # None = use all
+}
+
+# Mid Training Dataset Config (Structured tasks)
+# Kullanım: training_stage='mid' olduğunda bu config kullanılır
+# Türkçe dataset'ler: Wikipedia, news, QA, math
+MID_DATASET_CONFIG = {
+    'datasets': [
+        {'type': 'wikipedia', 'split': 'train', 'max_samples': 10000},  # Türkçe Wikipedia
+        {'type': 'news', 'split': 'train', 'max_samples': 5000},        # Türkçe haberler
+        {'type': 'qa', 'split': 'train', 'max_samples': 2000},          # Türkçe soru-cevap
+        {'type': 'math', 'split': 'train', 'max_samples': 1000},        # Türkçe matematik
+    ]
+}
+
+# SFT (Chat) Dataset Config
+# Kullanım: training_stage='sft' olduğunda bu config kullanılır
+# Türkçe conversation dataset'leri
+SFT_DATASET_CONFIG = {
+    'datasets': [
+        {'type': 'chat', 'split': 'train', 'max_samples': 5000},  # Türkçe chat conversations
+    ]
+}

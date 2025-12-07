@@ -10,12 +10,18 @@ import unicodedata
 import wandb
 from contextlib import redirect_stdout, redirect_stderr
 
-from deepspeed_config.deepspeed_config import create_deepspeed_config
+from transformer_train.deepspeed_config.deepspeed_config import create_deepspeed_config
 
 from .utils import EarlyStopping, cleanup_memory, evaluate_model_comprehensive, get_cosine_schedule_with_warmup, get_gpu_memory_info, get_memory_usage, get_memory_usage_safe
-from .config import MODEL_CONFIG, TRAINING_CONFIG, TEST_PROMPTS
+from .config import (
+    MODEL_CONFIG, TRAINING_CONFIG, TEST_PROMPTS, 
+    BASE_DATASET_CONFIG, MID_DATASET_CONFIG, SFT_DATASET_CONFIG,
+    TRAINING_STAGE_DATASET_MAP
+)
 from .tokenizer import create_tokenizer
 from .dataset import TransformerDataset, load_and_preprocess_data
+from .dataloader import tokenizing_distributed_data_loader_with_state, tokenizing_distributed_data_loader
+from .dataset_utils import create_mid_datasets, create_sft_datasets
 from .transformer_block import Transformer
 
 try:
@@ -44,7 +50,7 @@ except ImportError:
     BLEU_AVAILABLE = False
 
 def train(
-    tokenizer_path="turkish_tokenizer/turkish_tokenizer.model",
+    tokenizer_path="tokenizer",  # Default to tokenizer directory (RustBPE)
     resume_from_checkpoint=None,
     auto_resume=False,
     use_wandb=True,
@@ -95,13 +101,13 @@ def train(
         )
     
 
-    print(f"\nLoading data (max {TRAINING_CONFIG['max_data_samples']:,} samples)...")
-    full_corpus = load_and_preprocess_data(max_samples=TRAINING_CONFIG['max_data_samples'])
-    print(f"Loaded {len(full_corpus):,} text samples")
-    
-
-    print(f"\nLoading NEW tokenizer: {tokenizer_path}")
-    tokenizer = create_tokenizer(model_path=tokenizer_path)
+    print(f"\nLoading tokenizer from: {tokenizer_path}")
+    # Try to load as RustBPE tokenizer first
+    if os.path.isdir(tokenizer_path):
+        tokenizer = create_tokenizer(tokenizer_dir=tokenizer_path)
+    else:
+        # Legacy support for SentencePiece
+        tokenizer = create_tokenizer(model_path=tokenizer_path)
     
     # Update config
     MODEL_CONFIG['vocab_size'] = tokenizer.vocab_size
@@ -109,68 +115,208 @@ def train(
     
     print(f"Vocabulary size: {tokenizer.vocab_size:,}")
     
-    print("\nTesting new tokenizer:")
+    print("\nTesting tokenizer:")
     test_text = "Türkiye'nin başkenti Ankara'dır. İstanbul Boğazı çok güzel."
     tokens = tokenizer.encode(test_text, add_special_tokens=False)
+    if isinstance(tokens[0], list):
+        tokens = tokens[0]
     decoded = tokenizer.decode(tokens, skip_special_tokens=True)
     print(f"Original: {test_text}")
     print(f"Tokens: {len(tokens)} tokens")
     print(f"Decoded: {decoded}")
     print(f"Match: {'OK' if test_text.strip() == decoded.strip() else 'NO'}")
     
-    print("Tokenizing data...")
-    all_tokens = []
-    for text in tqdm(full_corpus, desc="Encoding texts"):
-        tokens = tokenizer.encode(text, add_special_tokens=False)
-        all_tokens.extend(tokens)
+    # Check training stage and select appropriate dataset config
+    training_stage = TRAINING_CONFIG.get('training_stage', 'base')
+    print(f"\nTraining stage: {training_stage}")
+    
+    # Get dataset config name from mapping
+    if training_stage not in TRAINING_STAGE_DATASET_MAP:
+        raise ValueError(
+            f"Unknown training stage: {training_stage}. "
+            f"Must be one of: {list(TRAINING_STAGE_DATASET_MAP.keys())}"
+        )
+    
+    dataset_config_name = TRAINING_STAGE_DATASET_MAP[training_stage]
+    print(f"Using dataset config: {dataset_config_name}")
+    
+    # Map config name to actual config
+    dataset_config_map = {
+        'BASE_DATASET_CONFIG': BASE_DATASET_CONFIG,
+        'MID_DATASET_CONFIG': MID_DATASET_CONFIG,
+        'SFT_DATASET_CONFIG': SFT_DATASET_CONFIG,
+    }
+    
+    dataset_config = dataset_config_map[dataset_config_name].copy()
+    print(f"Dataset config loaded: {dataset_config_name}")
+    
+    dataset_type = dataset_config.get('type', 'parquet')
+    data_dir = dataset_config.get('data_dir', 'base_data')
+    
+    print(f"Dataset type: {dataset_type}")
+    
+    # Use parquet streaming for base training, otherwise use structured datasets
+    use_parquet_streaming = (training_stage == 'base' and dataset_type == 'parquet')
+    
+    if use_parquet_streaming:
+        print(f"Using parquet streaming dataloader from: {data_dir}")
+        try:
+            # Use streaming dataloader (nanochat-style)
+            dataloader_resume_state_dict = None  # Will be set from checkpoint if resuming
+            
+            train_loader = tokenizing_distributed_data_loader_with_state(
+                B=TRAINING_CONFIG['batch_size'],
+                T=MODEL_CONFIG['block_size'],
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_path=tokenizer_path,
+                device=str(device),
+                resume_state_dict=dataloader_resume_state_dict,
+                data_dir=data_dir
+            )
+            
+            build_val_loader = lambda: tokenizing_distributed_data_loader(
+                B=TRAINING_CONFIG['batch_size'],
+                T=MODEL_CONFIG['block_size'],
+                split="val",
+                tokenizer=tokenizer,
+                tokenizer_path=tokenizer_path,
+                device=str(device),
+                data_dir=data_dir
+            )
+            
+            # Kick off first batch
+            x, y, dataloader_state_dict = next(train_loader)
+            print(f"Parquet streaming dataloader initialized successfully!")
+            print(f"Batch shape: {x.shape}, {y.shape}")
+            
+        except (FileNotFoundError, Exception) as e:
+            print(f"Warning: Parquet streaming failed ({e}), falling back to HuggingFace dataset")
+            use_parquet_streaming = False
+    
+    if not use_parquet_streaming:
+        # Handle mid-training or SFT datasets
+        if training_stage == 'mid':
+            print(f"\nLoading mid-training datasets...")
+            task_mixture = create_mid_datasets(dataset_config)
+            
+            # Convert to text format and tokenize
+            full_corpus = []
+            for text in task_mixture:
+                full_corpus.append(text)
+                if TRAINING_CONFIG['max_data_samples'] and len(full_corpus) >= TRAINING_CONFIG['max_data_samples']:
+                    break
+            
+            print(f"Loaded {len(full_corpus):,} text samples from mid-training datasets")
+            
+        elif training_stage == 'sft':
+            print(f"\nLoading SFT (chat) datasets...")
+            sft_datasets = create_sft_datasets(dataset_config)
+            
+            # Convert conversation format to text (using tokenizer's render_conversation)
+            full_corpus = []
+            for dataset in sft_datasets:
+                for conv in dataset:
+                    if isinstance(conv, dict) and 'messages' in conv:
+                        # Render conversation to text format
+                        text = tokenizer.render_conversation(conv['messages'])
+                        full_corpus.append(text)
+                    else:
+                        full_corpus.append(str(conv))
+                    
+                    if TRAINING_CONFIG['max_data_samples'] and len(full_corpus) >= TRAINING_CONFIG['max_data_samples']:
+                        break
+                if TRAINING_CONFIG['max_data_samples'] and len(full_corpus) >= TRAINING_CONFIG['max_data_samples']:
+                    break
+            
+            print(f"Loaded {len(full_corpus):,} conversation samples from SFT datasets")
+            
+        else:
+            # Fallback to HuggingFace dataset (legacy)
+            print(f"\nLoading data from HuggingFace (max {TRAINING_CONFIG['max_data_samples']:,} samples)...")
+            full_corpus = load_and_preprocess_data(max_samples=TRAINING_CONFIG['max_data_samples'])
+            print(f"Loaded {len(full_corpus):,} text samples")
         
-        if len(all_tokens) % 1000000 == 0:
-            cleanup_memory()
+        print("Tokenizing data...")
+        all_tokens = []
+        for text in tqdm(full_corpus, desc="Encoding texts"):
+            tokens = tokenizer.encode(text, add_special_tokens=False)
+            if isinstance(tokens, list) and len(tokens) > 0 and isinstance(tokens[0], list):
+                tokens = tokens[0]
+            all_tokens.extend(tokens)
+            
+            if len(all_tokens) % 1000000 == 0:
+                cleanup_memory()
+        
+        # Split data
+        split_idx = int(0.9 * len(all_tokens))
+        train_tokens = all_tokens[:split_idx]
+        val_tokens = all_tokens[split_idx:]
+        
+        print(f"Total tokens: {len(all_tokens):,}")
+        print(f"Train tokens: {len(train_tokens):,}")
+        print(f"Val tokens: {len(val_tokens):,}")
+        
+        del all_tokens, full_corpus
+        cleanup_memory()
+        
+        train_dataset = TransformerDataset(train_tokens, MODEL_CONFIG['block_size'])
+        val_dataset = TransformerDataset(val_tokens, MODEL_CONFIG['block_size'])
+        
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=TRAINING_CONFIG['batch_size'],
+            shuffle=True,
+            num_workers=TRAINING_CONFIG['dataloader_num_workers'],
+            pin_memory=TRAINING_CONFIG['pin_memory'],
+            prefetch_factor=TRAINING_CONFIG['prefetch_factor'],
+            drop_last=True
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=TRAINING_CONFIG['batch_size'],
+            shuffle=False,
+            num_workers=TRAINING_CONFIG['dataloader_num_workers'],
+            pin_memory=TRAINING_CONFIG['pin_memory'],
+            prefetch_factor=TRAINING_CONFIG['prefetch_factor'],
+            drop_last=True
+        )
+        
+        build_val_loader = lambda: val_loader
+        dataloader_state_dict = None
     
-    # Split data
-    split_idx = int(0.9 * len(all_tokens))
-    train_tokens = all_tokens[:split_idx]
-    val_tokens = all_tokens[split_idx:]
-    
-    print(f"Total tokens: {len(all_tokens):,}")
-    print(f"Train tokens: {len(train_tokens):,}")
-    print(f"Val tokens: {len(val_tokens):,}")
-    print(f"Compression ratio: {len(' '.join(full_corpus)) / len(all_tokens):.2f} chars/token")
-    
-    del all_tokens, full_corpus
-    cleanup_memory()
-    
-    train_dataset = TransformerDataset(train_tokens, MODEL_CONFIG['block_size'])
-    val_dataset = TransformerDataset(val_tokens, MODEL_CONFIG['block_size'])
-    
-
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=TRAINING_CONFIG['batch_size'],
-        shuffle=True,
-        num_workers=TRAINING_CONFIG['dataloader_num_workers'],
-        pin_memory=TRAINING_CONFIG['pin_memory'],
-        prefetch_factor=TRAINING_CONFIG['prefetch_factor'],
-        drop_last=True  # Consistent batch sizes
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=TRAINING_CONFIG['batch_size'],
-        shuffle=False,
-        num_workers=TRAINING_CONFIG['dataloader_num_workers'],
-        pin_memory=TRAINING_CONFIG['pin_memory'],
-        prefetch_factor=TRAINING_CONFIG['prefetch_factor'],
-        drop_last=True
-    )
-    
-    print(f"Train batches per epoch: {len(train_loader):,}")
-    print(f"Val batches: {len(val_loader):,}")
     print(f"Effective batch size: {TRAINING_CONFIG['batch_size'] * TRAINING_CONFIG['accumulation_steps']}")
     
-    # Initialize model
+    # Initialize model (with meta device support for memory efficiency)
     print(f"\nInitializing Transformer...")
-    model = Transformer(MODEL_CONFIG, tokenizer).to(device)
+    use_meta_device = TRAINING_CONFIG.get('use_meta_device', False) and device_type == 'cuda'
+    
+    if use_meta_device:
+        print("Using meta device initialization for memory efficiency...")
+        with torch.device("meta"):
+            model = Transformer(MODEL_CONFIG, tokenizer)
+        # Move to actual device and initialize weights
+        model.to_empty(device=device)
+        model.apply(model._init_weights)
+        # Re-initialize rotary embeddings
+        head_dim = MODEL_CONFIG['n_embd'] // MODEL_CONFIG['n_head']
+        cos, sin = model._precompute_rotary_embeddings(model.rotary_seq_len, head_dim, device=device)
+        model.cos = cos.to(device)
+        model.sin = sin.to(device)
+        # Special initialization for output projections
+        torch.nn.init.zeros_(model.lm_head.weight)
+        for block in model.h:
+            torch.nn.init.zeros_(block.mlp.c_proj.weight)
+            torch.nn.init.zeros_(block.attn.c_proj.weight)
+        # Cast embeddings to bfloat16 if on CUDA
+        if device_type == 'cuda':
+            model.wte = model.wte.to(dtype=torch.bfloat16)
+            model.cos = model.cos.to(dtype=torch.bfloat16)
+            model.sin = model.sin.to(dtype=torch.bfloat16)
+    else:
+        model = Transformer(MODEL_CONFIG, tokenizer).to(device)
+    
     print(f"Model parameters: {model.get_num_params()/1e6:.1f}M")
     print(f"Memory after model load: {get_memory_usage()}")
     
@@ -226,14 +372,33 @@ def train(
     else:
         print(f"\nUsing standard PyTorch training...")
         
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=TRAINING_CONFIG['learning_rate'],
-            weight_decay=TRAINING_CONFIG['weight_decay'],
-            betas=(TRAINING_CONFIG['beta1'], TRAINING_CONFIG['beta2']),
-            eps=1e-8,
-            fused=True if device_type == 'cuda' else False
-        )
+        # Use Muon optimizer if enabled, otherwise use standard AdamW
+        use_muon = TRAINING_CONFIG.get('use_muon_optimizer', False)
+        
+        if use_muon:
+            print("Using Muon optimizer with separate learning rates (nanochat-style)...")
+            optimizers = model.setup_optimizers(
+                unembedding_lr=TRAINING_CONFIG.get('unembedding_lr', 0.004),
+                embedding_lr=TRAINING_CONFIG.get('embedding_lr', 0.2),
+                matrix_lr=TRAINING_CONFIG.get('matrix_lr', 0.02),
+                weight_decay=TRAINING_CONFIG.get('weight_decay', 0.0)
+            )
+            # For compatibility, we'll use the first optimizer (AdamW) for scheduler
+            # In practice, you might want separate schedulers for each optimizer
+            optimizer = optimizers[0]  # AdamW optimizer
+            muon_optimizer = optimizers[1]  # Muon optimizer
+            print(f"  AdamW optimizer: {len(optimizer.param_groups)} param groups")
+            print(f"  Muon optimizer: {len(muon_optimizer.param_groups)} param groups")
+        else:
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=TRAINING_CONFIG['learning_rate'],
+                weight_decay=TRAINING_CONFIG['weight_decay'],
+                betas=(TRAINING_CONFIG['beta1'], TRAINING_CONFIG['beta2']),
+                eps=1e-8,
+                fused=True if device_type == 'cuda' else False
+            )
+            muon_optimizer = None
         
         # Scheduler
         total_steps = len(train_loader) * TRAINING_CONFIG['max_epochs'] // TRAINING_CONFIG['accumulation_steps']
@@ -256,7 +421,8 @@ def train(
                 print(f"\nResuming from: {resume_from_checkpoint}")
                 
                 resume_info = load_checkpoint(
-                    resume_from_checkpoint, model, optimizer, scheduler, scaler, device
+                    resume_from_checkpoint, model, optimizer, scheduler, scaler, device,
+                    muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None
                 )
                 loaded_epoch = resume_info['epoch']
                 global_step = resume_info['global_step']
@@ -280,17 +446,19 @@ def train(
                 print(f"Resume successful: Epoch {start_epoch}, Step {global_step}, Best Val Loss: {best_val_loss:.4f}")
                 print(f"Estimated steps per epoch: {steps_per_epoch}")
                 
-                print(f"Recreating DataLoader with seed based on global_step: {global_step}")
-                train_loader = DataLoader(
-                    train_dataset, 
-                    batch_size=TRAINING_CONFIG['batch_size'],
-                    shuffle=True,
-                    num_workers=TRAINING_CONFIG['dataloader_num_workers'],
-                    pin_memory=TRAINING_CONFIG['pin_memory'],
-                    prefetch_factor=TRAINING_CONFIG['prefetch_factor'],
-                    drop_last=True,
-                    generator=torch.Generator().manual_seed(42 + global_step)
-                )
+                # If using parquet streaming, resume state is handled by dataloader
+                if not use_parquet_streaming:
+                    print(f"Recreating DataLoader with seed based on global_step: {global_step}")
+                    train_loader = DataLoader(
+                        train_dataset, 
+                        batch_size=TRAINING_CONFIG['batch_size'],
+                        shuffle=True,
+                        num_workers=TRAINING_CONFIG['dataloader_num_workers'],
+                        pin_memory=TRAINING_CONFIG['pin_memory'],
+                        prefetch_factor=TRAINING_CONFIG['prefetch_factor'],
+                        drop_last=True,
+                        generator=torch.Generator().manual_seed(42 + global_step)
+                    )
                 
             except Exception as e:
                 print(f"Resume failed: {e}")
@@ -329,70 +497,257 @@ def train(
 
         if(global_step > 0):
             print(f"Resume info: Starting from saved epoch {epoch + 1}, global step {global_step}")
-        steps_per_epoch = len(train_loader) // TRAINING_CONFIG['accumulation_steps']
-        expected_epoch_from_step = global_step // steps_per_epoch if steps_per_epoch > 0 else 0
-        print(f"  Steps per epoch: {steps_per_epoch}")
-        print(f"  Expected epoch from global_step: {expected_epoch_from_step}")
-        print(f"  Total batches this epoch: {len(train_loader)}")
-        print(f"  Accumulation steps: {TRAINING_CONFIG['accumulation_steps']}")
         
-        batch_counter = 0
-        for batch_idx, (inputs, targets) in enumerate(progress_bar):
-            inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
+        if use_parquet_streaming:
+            # Streaming dataloader: infinite iterator, iteration-based
+            max_iterations = TRAINING_CONFIG.get('max_iterations', None)
+            if max_iterations is None:
+                # Estimate iterations from epochs (approximate)
+                estimated_batches_per_epoch = 1000  # placeholder - adjust based on your data
+                max_iterations = estimated_batches_per_epoch * TRAINING_CONFIG['max_epochs']
             
-            # Forward pass with mixed precision
-            with autocast(device_type=device_type, enabled=(device_type == 'cuda' and not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']))):
-                _, loss = model(inputs, targets)
-                if not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']):
-                    loss = loss / TRAINING_CONFIG['accumulation_steps']
+            print(f"  Using iteration-based training (streaming)")
+            print(f"  Max iterations: {max_iterations:,}")
+            print(f"  Accumulation steps: {TRAINING_CONFIG['accumulation_steps']}")
             
-            # Backward pass
-            if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                model.backward(loss)
-            else:
-                if scaler:
-                    scaler.scale(loss).backward()
-                else:
-                    loss.backward()
-            
-            if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                batch_loss = loss.item()
-            else:
-                batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
-            
-            total_train_loss += batch_loss
-            num_train_batches += 1
-            batch_counter += 1
-            
-            if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                current_lr = model.get_lr()[0] if hasattr(model, 'get_lr') else TRAINING_CONFIG['learning_rate']
-            else:
-                current_lr = scheduler.get_last_lr()[0]
-            
-            progress_bar.set_postfix({
-                'loss': f"{batch_loss:.4f}",
-                'lr': f"{current_lr:.2e}",
-                'mem': get_memory_usage_safe(),
-                'step': global_step,
-                'processed': batch_counter
-            })
-            
-            # Optimizer step
-            if (batch_idx + 1) % TRAINING_CONFIG['accumulation_steps'] == 0:
+            batch_counter = 0
+            iteration = 0
+            for batch_idx in range(max_iterations):
+                try:
+                    batch_data = next(train_loader)
+                    if isinstance(batch_data, tuple) and len(batch_data) == 3:
+                        inputs, targets, dataloader_state_dict = batch_data
+                    else:
+                        inputs, targets = batch_data
+                        dataloader_state_dict = None
+                except StopIteration:
+                    break
+                
+                inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
+                iteration += 1
+                
+                # Forward pass with mixed precision
+                with autocast(device_type=device_type, enabled=(device_type == 'cuda' and not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']))):
+                    logits, loss = model.forward(inputs, targets=targets)
+                    if not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']):
+                        loss = loss / TRAINING_CONFIG['accumulation_steps']
+                
+                # Backward pass
                 if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                    model.step()
+                    model.backward(loss)
                 else:
                     if scaler:
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
-                        scaler.step(optimizer)
-                        scaler.update()
+                        scaler.scale(loss).backward()
                     else:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
-                        optimizer.step()
+                        loss.backward()
+                
+                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
+                    batch_loss = loss.item()
+                else:
+                    batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
+                
+                total_train_loss += batch_loss
+                num_train_batches += 1
+                batch_counter += 1
+                
+                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
+                    current_lr = model.get_lr()[0] if hasattr(model, 'get_lr') else TRAINING_CONFIG['learning_rate']
+                else:
+                    current_lr = scheduler.get_last_lr()[0]
+                
+                if batch_idx % 10 == 0:  # Update progress bar less frequently for streaming
+                    progress_bar.set_postfix({
+                        'loss': f"{batch_loss:.4f}",
+                        'lr': f"{current_lr:.2e}",
+                        'mem': get_memory_usage_safe(),
+                        'step': global_step,
+                        'iter': iteration
+                    })
+                
+                # Optimizer step
+                if (batch_idx + 1) % TRAINING_CONFIG['accumulation_steps'] == 0:
+                    if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
+                        model.step()
+                    else:
+                        if scaler:
+                            scaler.unscale_(optimizer)
+                            if muon_optimizer is not None:
+                                all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
+                                if muon_optimizer.param_groups:
+                                    all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
+                                torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
+                            else:
+                                torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
+                            scaler.step(optimizer)
+                            if muon_optimizer is not None:
+                                muon_optimizer.step()
+                            scaler.update()
+                        else:
+                            if muon_optimizer is not None:
+                                all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
+                                if muon_optimizer.param_groups:
+                                    all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
+                                torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
+                            else:
+                                torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
+                            optimizer.step()
+                            if muon_optimizer is not None:
+                                muon_optimizer.step()
+                        
+                        scheduler.step()
+                        optimizer.zero_grad()
+                        if muon_optimizer is not None:
+                            muon_optimizer.zero_grad()
                     
-                    scheduler.step()
-                    optimizer.zero_grad()
+                    # Increment global_step for actual training steps
+                    global_step += 1
+                    
+                    if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb:
+                        wandb.log({
+                            'train_loss_step': batch_loss,
+                            'learning_rate': current_lr,
+                            'global_step': global_step,
+                            'iteration': iteration
+                        })
+                    
+                    if global_step % TRAINING_CONFIG['eval_steps'] == 0 and global_step > 0:
+                        print(f"\nQuick eval at step {global_step}")
+                        model.eval()
+                        quick_val_loss = 0
+                        quick_batches = 0
+                        
+                        val_loader_eval = build_val_loader()
+                        
+                        with torch.no_grad():
+                            for val_batch_idx, val_batch_data in enumerate(val_loader_eval):
+                                if val_batch_idx >= 10:  # Quick eval
+                                    break
+                                
+                                if isinstance(val_batch_data, tuple) and len(val_batch_data) == 3:
+                                    val_inputs, val_targets, _ = val_batch_data
+                                else:
+                                    val_inputs, val_targets = val_batch_data
+                                
+                                val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+                                
+                                with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
+                                    _, val_loss = model.forward(val_inputs, targets=val_targets)
+                                
+                                quick_val_loss += val_loss.item()
+                                quick_batches += 1
+                        
+                        avg_quick_val_loss = quick_val_loss / quick_batches if quick_batches > 0 else float('inf')
+                        print(f"Step {global_step}: Train: {total_train_loss/num_train_batches:.4f}, Quick Val: {avg_quick_val_loss:.4f}")
+                        
+                        if use_wandb:
+                            wandb.log({
+                                'quick_val_loss': avg_quick_val_loss,
+                                'train_loss_avg': total_train_loss/num_train_batches,
+                                'global_step': global_step
+                            })
+                        
+                        model.train()
+                        cleanup_memory()
+                    
+                    if global_step % TRAINING_CONFIG['checkpoint_steps'] == 0 and global_step > 0:
+                        checkpoint_path = f"checkpoints/checkpoint_step_{global_step}.safetensors"
+                        save_checkpoint(
+                            model, optimizer, scheduler, scaler, epoch, global_step,
+                            best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
+                            checkpoint_path=checkpoint_path, muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None
+                        )
+                    
+                    if global_step % 50 == 0:
+                        cleanup_memory()
+                    
+                    if (batch_idx + 1) % TRAINING_CONFIG['accumulation_steps'] == 0:
+                        torch.cuda.empty_cache()
+        else:
+            # Regular dataloader: epoch-based
+            steps_per_epoch = len(train_loader) // TRAINING_CONFIG['accumulation_steps']
+            expected_epoch_from_step = global_step // steps_per_epoch if steps_per_epoch > 0 else 0
+            print(f"  Steps per epoch: {steps_per_epoch}")
+            print(f"  Expected epoch from global_step: {expected_epoch_from_step}")
+            print(f"  Total batches this epoch: {len(train_loader)}")
+            print(f"  Accumulation steps: {TRAINING_CONFIG['accumulation_steps']}")
+            
+            batch_counter = 0
+            for batch_idx, (inputs, targets) in enumerate(progress_bar):
+                inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
+                
+                # Forward pass with mixed precision
+                with autocast(device_type=device_type, enabled=(device_type == 'cuda' and not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']))):
+                    logits, loss = model.forward(inputs, targets=targets)
+                    if not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']):
+                        loss = loss / TRAINING_CONFIG['accumulation_steps']
+                
+                # Backward pass
+                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
+                    model.backward(loss)
+                else:
+                    if scaler:
+                        scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+                
+                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
+                    batch_loss = loss.item()
+                else:
+                    batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
+                
+                total_train_loss += batch_loss
+                num_train_batches += 1
+                batch_counter += 1
+                
+                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
+                    current_lr = model.get_lr()[0] if hasattr(model, 'get_lr') else TRAINING_CONFIG['learning_rate']
+                else:
+                    current_lr = scheduler.get_last_lr()[0]
+                
+                progress_bar.set_postfix({
+                    'loss': f"{batch_loss:.4f}",
+                    'lr': f"{current_lr:.2e}",
+                    'mem': get_memory_usage_safe(),
+                    'step': global_step,
+                    'processed': batch_counter
+                })
+                
+                # Optimizer step
+                if (batch_idx + 1) % TRAINING_CONFIG['accumulation_steps'] == 0:
+                    if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
+                        model.step()
+                    else:
+                        if scaler:
+                            scaler.unscale_(optimizer)
+                            if muon_optimizer is not None:
+                                # Clip gradients for both optimizers
+                                all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
+                                if muon_optimizer.param_groups:
+                                    all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
+                                torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
+                            else:
+                                torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
+                            scaler.step(optimizer)
+                            if muon_optimizer is not None:
+                                muon_optimizer.step()
+                            scaler.update()
+                        else:
+                            if muon_optimizer is not None:
+                                # Clip gradients for both optimizers
+                                all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
+                                if muon_optimizer.param_groups:
+                                    all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
+                                torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
+                            else:
+                                torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
+                            optimizer.step()
+                            if muon_optimizer is not None:
+                                muon_optimizer.step()
+                        
+                        scheduler.step()
+                        optimizer.zero_grad()
+                        if muon_optimizer is not None:
+                            muon_optimizer.zero_grad()
                 
                 # Increment global_step for actual training steps
                 global_step += 1
@@ -411,14 +766,22 @@ def train(
                     quick_val_loss = 0
                     quick_batches = 0
                     
+                    val_loader_eval = build_val_loader() if use_parquet_streaming else val_loader
+                    
                     with torch.no_grad():
-                        for val_batch_idx, (val_inputs, val_targets) in enumerate(val_loader):
+                        for val_batch_idx, val_batch_data in enumerate(val_loader_eval):
                             if val_batch_idx >= 10:  # Quick eval
                                 break
+                            
+                            if isinstance(val_batch_data, tuple) and len(val_batch_data) == 3:
+                                val_inputs, val_targets, _ = val_batch_data
+                            else:
+                                val_inputs, val_targets = val_batch_data
+                            
                             val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
                             
                             with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
-                                _, val_loss = model(val_inputs, val_targets)
+                                _, val_loss = model.forward(val_inputs, targets=val_targets)
                             
                             quick_val_loss += val_loss.item()
                             quick_batches += 1
@@ -441,7 +804,7 @@ def train(
                     save_checkpoint(
                         model, optimizer, scheduler, scaler, epoch, global_step,
                         best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
-                        checkpoint_path=checkpoint_path
+                        checkpoint_path=checkpoint_path, muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None
                     )
             
             if global_step % 50 == 0: 
@@ -460,7 +823,8 @@ def train(
             print(f"EVALUATION - Epoch {epoch + 1}")
             print(f"{'='*80}")
             
-            metrics = evaluate_model_comprehensive(model, val_loader, tokenizer, device, device_type, TRAINING_CONFIG)
+            val_loader_eval = build_val_loader() if use_parquet_streaming else val_loader
+            metrics = evaluate_model_comprehensive(model, val_loader_eval, tokenizer, device, device_type, TRAINING_CONFIG)
             
             val_loss = metrics['val_loss']
             perplexity = metrics['perplexity']
@@ -495,7 +859,8 @@ def train(
                 save_checkpoint(
                     model, optimizer, scheduler, scaler, epoch, global_step,
                     best_val_loss, perplexity, MODEL_CONFIG, tokenizer_path,
-                    checkpoint_path="checkpoints/best_model_120m_8gb.safetensors"
+                    checkpoint_path="checkpoints/best_model_120m_8gb.safetensors",
+                    muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None
                 )
                 print(f"New best model saved! Val loss: {val_loss:.4f}")
             
@@ -511,7 +876,7 @@ def train(
             save_checkpoint(
                 model, optimizer, scheduler, scaler, epoch, global_step,
                 best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
-                checkpoint_path=checkpoint_path
+                checkpoint_path=checkpoint_path, muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None
             )
     
     if use_wandb:
@@ -521,11 +886,29 @@ def train(
     print(f"Best Val Loss: {best_val_loss:.4f}")
     print(f"Final memory usage: {get_memory_usage()}")
     
+    # Log to report
+    try:
+        from .report import get_report
+        training_stage = TRAINING_CONFIG.get('training_stage', 'base')
+        get_report().log(section=f"{training_stage.capitalize()} model training", data=[
+            {
+                "Training stage": training_stage,
+                "Number of epochs": epoch + 1,
+                "Best validation loss": best_val_loss,
+                "Best perplexity": early_stopping.best_loss if hasattr(early_stopping, 'best_loss') else float('inf'),
+                "Global step": global_step,
+            },
+            MODEL_CONFIG,
+            TRAINING_CONFIG,
+        ])
+    except Exception as e:
+        print(f"Warning: Could not log to report: {e}")
+    
     return model
 
 def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step, 
                    best_val_loss, best_perplexity, config, tokenizer_path, 
-                   checkpoint_path="checkpoint.safetensors"):
+                   checkpoint_path="checkpoint.safetensors", muon_optimizer=None):
     
     if not checkpoint_path.endswith('.safetensors'):
         checkpoint_path = checkpoint_path.replace('.pt', '.safetensors')
@@ -561,13 +944,12 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
         if not SAFETENSORS_AVAILABLE:
             raise ImportError("SafeTensors not available. Install with: pip install safetensors")
         
-        # Model state - weight tying için sadece embedding weight'i kaydet
+        # Model state - untied weights, so save everything
         model_state = {}
         state_dict = model.state_dict() if hasattr(model, 'state_dict') else model.module.state_dict()
         
         for name, param in state_dict.items():
-            if name != 'lm_head.weight':  # Weight tying nedeniyle lm_head skip
-                model_state[name] = param
+            model_state[name] = param
         
         # Metadata
         metadata = {
@@ -579,9 +961,9 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
             'tokenizer_path': tokenizer_path,
             'training_config': json.dumps(TRAINING_CONFIG),
             'model_config': json.dumps(MODEL_CONFIG),
-            'weight_tying': 'true',
+            'weight_tying': 'false',  # Untied weights (nanochat-style)
             'deepspeed': 'false',
-            'model_type': 'TurkishTransformer'
+            'model_type': 'Transformer'
         }
         
         # Save to SafeTensors
@@ -597,6 +979,9 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
             if scaler:
                 additional_state['scaler'] = scaler.state_dict()
             
+            if muon_optimizer is not None:
+                additional_state['muon_optimizer'] = muon_optimizer.state_dict()
+            
             torch.save(additional_state, additional_state_path)
         
         print(f"Checkpoint saved: {os.path.basename(checkpoint_path)}")
@@ -604,7 +989,7 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
     cleanup_memory()
     return checkpoint_path
 
-def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scaler=None, device=None):
+def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scaler=None, device=None, muon_optimizer=None):
     
     print(f"Loading checkpoint: {checkpoint_path}")
     
@@ -651,6 +1036,10 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
         if scaler and 'scaler' in additional_state:
             scaler.load_state_dict(additional_state['scaler'])
             print("Scaler state loaded")
+        
+        if muon_optimizer and 'muon_optimizer' in additional_state:
+            muon_optimizer.load_state_dict(additional_state['muon_optimizer'])
+            print("Muon optimizer state loaded")
     
     # Parse metadata
     resume_info = {
@@ -703,9 +1092,15 @@ def generate(text,
     if silent:
         with open(os.devnull, 'w') as devnull:
             with redirect_stdout(devnull), redirect_stderr(devnull):
-                tokenizer = create_tokenizer(model_path=tokenizer_path)
+                if os.path.isdir(tokenizer_path):
+                    tokenizer = create_tokenizer(tokenizer_dir=tokenizer_path)
+                else:
+                    tokenizer = create_tokenizer(model_path=tokenizer_path)
     else:
-        tokenizer = create_tokenizer(model_path=tokenizer_path)
+        if os.path.isdir(tokenizer_path):
+            tokenizer = create_tokenizer(tokenizer_dir=tokenizer_path)
+        else:
+            tokenizer = create_tokenizer(model_path=tokenizer_path)
     
     if not model_path.endswith('.safetensors'):
         model_path = model_path.replace('.pt', '.safetensors')

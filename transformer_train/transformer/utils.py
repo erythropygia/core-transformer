@@ -99,7 +99,7 @@ def calculate_perplexity(model, data_loader, device, device_type, max_batches=50
         inputs, targets = inputs.to(device), targets.to(device)
         
         with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
-            _, loss = model(inputs, targets)
+            _, loss = model.forward(inputs, targets=targets)
         
         batch_tokens = targets.numel()
         total_loss += loss.item() * batch_tokens
@@ -183,7 +183,7 @@ def evaluate_model_comprehensive(model, val_loader, tokenizer, device, device_ty
         inputs, targets = inputs.to(device), targets.to(device)
         
         with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
-            _, loss = model(inputs, targets)
+            _, loss = model.forward(inputs, targets=targets)
         
         total_loss += loss.item()
         num_batches += 1
@@ -234,6 +234,8 @@ class EarlyStopping:
             
         if self.counter >= self.patience:
             if self.restore_best_weights and self.best_weights is not None:
-                model.load_state_dict({k: v.to(model.device) for k, v in self.best_weights.items()})
+                # Get device from model parameters
+                device = next(model.parameters()).device
+                model.load_state_dict({k: v.to(device) for k, v in self.best_weights.items()})
             return True
         return False

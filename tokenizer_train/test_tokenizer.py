@@ -1,74 +1,77 @@
 import os
-import sentencepiece as spm
-from pathlib import Path
-import time
 import sys
+import time
+from pathlib import Path
 
-def test_tokenizer():
-    model_file = Path('turkish_tokenizer/turkish_tokenizer.model')
+# Add parent directory to path to import transformer modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from transformer_train.transformer.tokenizer import RustBPETokenizer, SPECIAL_TOKENS, create_tokenizer
+
+
+def test_tokenizer(tokenizer_dir=None):    
+    # Try to load tokenizer
+    if tokenizer_dir is None:
+        # Try common locations
+        possible_dirs = ["tokenizer", "turkish_tokenizer", "out/tokenizer"]
+        for dir_path in possible_dirs:
+            if os.path.exists(dir_path):
+                pickle_path = os.path.join(dir_path, "tokenizer.pkl")
+                if os.path.exists(pickle_path):
+                    tokenizer_dir = dir_path
+                    break
     
-    if not model_file.exists():
-        print("Model file not found!")
-        print(f"Expected location: {model_file}")
-        print("First train the tokenizer: python train_turkish_tokenizer.py")
-        return
+    if tokenizer_dir is None or not os.path.exists(tokenizer_dir):
+        print("Tokenizer directory not found!")
+        print(f"Expected locations: tokenizer/, turkish_tokenizer/, out/tokenizer/")
+        print("First train the tokenizer: python train_tokenizer.py")
+        return False
     
-    sp = spm.SentencePieceProcessor()
-    sp.load(str(model_file))
+    try:
+        tokenizer = create_tokenizer(tokenizer_dir=tokenizer_dir)
+        print(f"Loaded tokenizer from: {tokenizer_dir}")
+    except Exception as e:
+        print(f"Failed to load tokenizer: {e}")
+        return False
     
-    print(f"Model: {model_file}")
-    print(f"Vocabulary size: {sp.vocab_size():,}")
-    print(f"UNK token ID: {sp.unk_id()}")
-    print(f"BOS token ID: {sp.bos_id()}")
-    print(f"EOS token ID: {sp.eos_id()}")
-    print(f"PAD token ID: {sp.pad_id()}")
+    print("=" * 80)
+    print("TOKENIZER TEST")
+    print("=" * 80)
     print()
     
-    special_tokens = [
-        # Document structure tokens
-        '<|beginoftext|>', '<|endoftext|>', '<|startoftext|>', '<newline>',
-        # Core tokens
-        '<s>', '</s>', '<pad>', '<mask>', '<turkish>', '<instruction>', '</instruction>', '<context>',
-        # Chat tokens
-        '<|system|>', '<|user|>', '<|assistant|>', '<|end|>',
-        # Safety tokens
-        '<safe>', '<unsafe>', '<filtered>',
-        # Task specific tokens
-        '<translate>', '<summarize>', '<classify>',
-        # Reserved tokens
-        '<reserved1>', '<reserved2>', '<reserved3>'
-    ]
+    # Basic info
+    vocab_size = tokenizer.get_vocab_size()
+    bos_token_id = tokenizer.get_bos_token_id()
+    special_tokens = tokenizer.get_special_tokens()
     
-    print("Special Token Verification:")
+    print(f"Tokenizer Information:")
+    print(f"   Vocabulary size: {vocab_size:,}")
+    print(f"   BOS token ID: {bos_token_id}")
+    print(f"   BOS token: {tokenizer.decode([bos_token_id])}")
+    print(f"   Special tokens count: {len(special_tokens)}")
+    print()
+    
+    # Special tokens test
+    print("Special Tokens Test:")
+    print("-" * 40)
     found_tokens = 0
-    for token in special_tokens:
-        token_id = sp.piece_to_id(token)
-        if token_id != sp.unk_id():
-            print(f"   {token} -> ID: {token_id}")
-            found_tokens += 1
-        else:
-            print(f"   {token} -> Not found")
+    for token in SPECIAL_TOKENS:
+        try:
+            token_id = tokenizer.encode_special(token)
+            decoded = tokenizer.decode([token_id])
+            if token in decoded or decoded == token:
+                print(f"   {token} -> ID: {token_id}")
+                found_tokens += 1
+            else:
+                print(f"   {token} -> ID: {token_id} (decode: {decoded})")
+        except Exception as e:
+            print(f"   {token} -> Error: {e}")
     
-    print(f"\nToken Coverage: {found_tokens}/{len(special_tokens)} ({found_tokens/len(special_tokens)*100:.1f}%)")
+    print(f"\n   Coverage: {found_tokens}/{len(SPECIAL_TOKENS)} ({found_tokens/len(SPECIAL_TOKENS)*100:.1f}%)")
     print()
     
-    print("Document Structure Token Test:")
-    
-    document_example = f"{sp.id_to_piece(sp.piece_to_id('<|beginoftext|>'))}" + \
-                      "Bu bir örnek Türkçe belge içeriğidir. " + \
-                      "Tokenizer bu metni nasıl işliyor test ediyoruz." + \
-                      f"{sp.id_to_piece(sp.piece_to_id('<|endoftext|>'))}"
-    
-    doc_tokens = sp.encode(document_example, out_type=str)
-    print(f"Document with structure tokens:")
-    print(f"   Input: {document_example}")
-    print(f"   Token count: {len(doc_tokens)}")
-    print(f"     First 5 tokens: {doc_tokens[:5]}")
-    print(f"     Last 5 tokens: {doc_tokens[-5:]}")
-    print()
-    
-    # Basic test sentences
-    print("Basic Tokenization Tests:")
+    # Basic encoding/decoding test
+    print("Basic Encode/Decode Tests:")
     print("-" * 40)
     
     test_sentences = [
@@ -77,29 +80,86 @@ def test_tokenizer():
         "Öğrencilerimiz sınavlarında çok başarılı oldular.",
         "Evlerimizde, okullarımızda, iş yerlerimizde hep birlikte yaşıyoruz.",
         "Teknolojik gelişmeler hayatımızı kolaylaştırıyor.",
-        "Arkadaşlarımızla birlikte güzel anılar oluşturuyoruz."
+        "Arkadaşlarımızla birlikte güzel anılar oluşturuyoruz.",
+        "Numbers: 123, 4567, 89",
+        "Special chars: @#$%^&*()",
     ]
     
+    all_passed = True
     for i, sentence in enumerate(test_sentences, 1):
-        print(f"Test {i}: {sentence}")
+        try:
+            # Encode without special tokens
+            tokens = tokenizer.encode(sentence, add_special_tokens=False)
+            token_ids = tokens if isinstance(tokens, list) else tokens[0] if isinstance(tokens[0], list) else tokens
+            
+            # Decode
+            decoded = tokenizer.decode(token_ids, skip_special_tokens=False)
+            
+            is_correct = sentence == decoded
+            if not is_correct:
+                all_passed = False
+            
+            status = "✅" if is_correct else "❌"
+            print(f"{status} Test {i}: {sentence[:50]}{'...' if len(sentence) > 50 else ''}")
+            if not is_correct:
+                print(f"      Original: {sentence}")
+                print(f"      Decoded:  {decoded}")
+            else:
+                print(f"      Tokens: {len(token_ids)}, Ratio: {len(sentence.encode('utf-8')) / len(token_ids):.2f} bytes/token")
+        except Exception as e:
+            print(f"❌ Test {i} failed: {e}")
+            all_passed = False
+    
+    print()
+    
+    # BOS token test
+    print("BOS Token Test:")
+    print("-" * 40)
+    test_text = "Bu bir test metnidir."
+    tokens_with_bos = tokenizer.encode(test_text, prepend=tokenizer.get_bos_token_id())
+    tokens_without_bos = tokenizer.encode(test_text, add_special_tokens=False)
+    
+    print(f"   Text: {test_text}")
+    print(f"   Without BOS: {len(tokens_without_bos)} tokens")
+    print(f"   With BOS: {len(tokens_with_bos)} tokens")
+    print(f"   First token ID: {tokens_with_bos[0]} (should be BOS: {bos_token_id})")
+    
+    if tokens_with_bos[0] == bos_token_id:
+        print("BOS token correctly prepended")
+    else:
+        print("BOS token not correctly prepended")
+        all_passed = False
+    print()
+    
+    # Batch encoding test
+    print("Batch Encoding Test:")
+    print("-" * 40)
+    batch_texts = [
+        "İlk metin.",
+        "İkinci metin.",
+        "Üçüncü metin."
+    ]
+    try:
+        batch_tokens = tokenizer.encode(batch_texts, add_special_tokens=False)
+        print(f"   Batch size: {len(batch_texts)}")
+        print(f"   Results: {[len(tokens) for tokens in batch_tokens]}")
         
-        tokens = sp.encode(sentence, out_type=str)
-        token_ids = sp.encode(sentence, out_type=int)
-        
-        print(f"   Tokens: {tokens[:8]}{'...' if len(tokens) > 8 else ''}")
-        print(f"   Token count: {len(tokens)}")
-        print(f"   Compression ratio: {len(sentence) / len(tokens):.2f} chars/token")
-        
-        decoded = sp.decode(token_ids)
-        is_correct = sentence == decoded
-        print(f"   {'Decode successful' if is_correct else 'Decode failed'}")
-        if not is_correct:
-            print(f"   Original: {sentence}")
-            print(f"   Decoded:  {decoded}")
-        print()
+        # Verify each can be decoded
+        for i, (text, tokens) in enumerate(zip(batch_texts, batch_tokens)):
+            decoded = tokenizer.decode(tokens)
+            if text == decoded:
+                print(f"   Batch item {i+1} decode successful")
+            else:
+                print(f"   Batch item {i+1} decode failed")
+                all_passed = False
+    except Exception as e:
+        print(f"   Batch encoding failed: {e}")
+        all_passed = False
+    print()
     
     # Turkish morphology test
-    print("Turkish Morphology Analysis:")
+    print("Turkish Morphology Test:")
+    print("-" * 40)
     
     morphology_examples = [
         ("ev", "evler", "evlerimiz", "evlerimizde"),
@@ -109,125 +169,172 @@ def test_tokenizer():
     ]
     
     for base, plural, possessive, locative in morphology_examples:
-        base_tokens = sp.encode(base, out_type=str)
-        plural_tokens = sp.encode(plural, out_type=str)
-        poss_tokens = sp.encode(possessive, out_type=str)
-        loc_tokens = sp.encode(locative, out_type=str)
+        base_tokens = tokenizer.encode(base, add_special_tokens=False)
+        plural_tokens = tokenizer.encode(plural, add_special_tokens=False)
+        poss_tokens = tokenizer.encode(possessive, add_special_tokens=False)
+        loc_tokens = tokenizer.encode(locative, add_special_tokens=False)
+        
+        base_len = len(base_tokens) if isinstance(base_tokens, list) else len(base_tokens[0]) if isinstance(base_tokens[0], list) else 1
+        plural_len = len(plural_tokens) if isinstance(plural_tokens, list) else len(plural_tokens[0]) if isinstance(plural_tokens[0], list) else 1
+        poss_len = len(poss_tokens) if isinstance(poss_tokens, list) else len(poss_tokens[0]) if isinstance(poss_tokens[0], list) else 1
+        loc_len = len(loc_tokens) if isinstance(loc_tokens, list) else len(loc_tokens[0]) if isinstance(loc_tokens[0], list) else 1
         
         print(f"   {base} → {plural} → {possessive} → {locative}")
-        print(f"   Token counts: {len(base_tokens)} → {len(plural_tokens)} → {len(poss_tokens)} → {len(loc_tokens)}")
-        print(f"   {base}: {base_tokens}")
-        print(f"   {possessive}: {poss_tokens}")
-        print()
+        print(f"   Token counts: {base_len} → {plural_len} → {poss_len} → {loc_len}")
+    print()
     
-    # Instruction Tuning token test
-    print("Instruction Tuning Token Test:")
+    # Chat format test (nanochat-style)
+    print("Chat Format Test:")
     print("-" * 40)
     
-    instruction_example = """<|beginoftext|><|system|>Sen yardımcı bir Türkçe asistansın. 🤖</|system|>
-<|user|><instruction>Bu metni özetle:</instruction>
-Türkiye Cumhuriyeti Anadolu ve Doğu Trakya'da kurulmuş bir ülkedir. 
-Başkenti Ankara, en büyük şehri İstanbul'dur.</|user|>
-<|assistant|><translate>Türkiye, Anadolu ve Doğu Trakya'da kurulmuş cumhuriyettir. 
-Başkent Ankara, büyük şehir İstanbul.</translate></|assistant|><|endoftext|>"""
+    chat_example = (
+        "<|user_start|>Merhaba! Nasılsın?<|user_end|>"
+        "<|assistant_start|>Merhaba! Ben iyiyim, teşekkürler. Sen nasılsın?<|assistant_end|>"
+    )
     
-    print("Instruction example:")
-    print(instruction_example)
+    try:
+        chat_tokens = tokenizer.encode(chat_example, add_special_tokens=False)
+        chat_decoded = tokenizer.decode(chat_tokens, skip_special_tokens=False)
+        
+        print(f"   Chat example: {chat_example[:60]}...")
+        print(f"   Token count: {len(chat_tokens) if isinstance(chat_tokens, list) else len(chat_tokens[0]) if isinstance(chat_tokens[0], list) else 1}")
+        print(f"   Decoded: {chat_decoded[:60]}...")
+        
+        # Check if special tokens are present
+        has_user_start = any(tokenizer.encode_special("<|user_start|>") in (t if isinstance(t, list) else [t]) 
+                            for t in (chat_tokens if isinstance(chat_tokens[0], list) else [chat_tokens]))
+        print(f"   {'OK' if has_user_start else 'NOT OK'} Special tokens detected")
+    except Exception as e:
+        print(f"   Chat format test failed: {e}")
+        all_passed = False
     print()
     
-    inst_tokens = sp.encode(instruction_example, out_type=str)
-    inst_ids = sp.encode(instruction_example, out_type=int)
-    
-    print(f"   Total token count: {len(inst_tokens)}")
-    print(f"   Average chars per token: {len(instruction_example) / len(inst_tokens):.2f}")
-    
-    begin_token_present = '<|beginoftext|>' in inst_tokens
-    end_token_present = '<|endoftext|>' in inst_tokens
-    
-    print(f"   {'OK' if begin_token_present else 'NO'} <|beginoftext|> token found")
-    print(f"   {'OK' if end_token_present else 'NO'} <|endoftext|> token found")
-    
-    decoded_inst = sp.decode(inst_ids)
-    decode_success = instruction_example == decoded_inst
-    print(f"   {'OK' if decode_success else 'NO'} Instruction decode successful")
-    print()
-    
+    # Performance benchmark
     print("Performance Benchmark:")
+    print("-" * 40)
     
+    test_text = "Bu bir performans testidir. " * 100
+    test_text_bytes = len(test_text.encode('utf-8'))
     
-    test_text = "Bu bir performans testidir." * 100 
-    
+    # Encoding benchmark
+    num_iterations = 100
     start_time = time.time()
-    for _ in range(100):
-        tokens = sp.encode(test_text, out_type=int)
+    for _ in range(num_iterations):
+        tokens = tokenizer.encode(test_text, add_special_tokens=False)
     encoding_time = time.time() - start_time
     
+    # Decoding benchmark
+    tokens = tokenizer.encode(test_text, add_special_tokens=False)
+    token_list = tokens if isinstance(tokens, list) else tokens[0] if isinstance(tokens[0], list) else tokens
     start_time = time.time()
-    for _ in range(100):
-        decoded = sp.decode(tokens)
+    for _ in range(num_iterations):
+        decoded = tokenizer.decode(token_list)
     decoding_time = time.time() - start_time
     
-    print(f"   Test text length: {len(test_text):,} characters")
-    print(f"   Token count: {len(tokens):,}")
-    print(f"   Encoding: {encoding_time:.4f}s (100 operations)")
-    print(f"   Decoding: {decoding_time:.4f}s (100 operations)")
-    print(f"   Encoding speed: {len(test_text) * 100 / encoding_time:,.0f} chars/sec")
-    print(f"   Decoding speed: {len(test_text) * 100 / decoding_time:,.0f} chars/sec")
+    num_tokens = len(token_list)
+    
+    print(f"   Test text: {test_text_bytes:,} bytes, {num_tokens:,} tokens")
+    print(f"   Encoding: {encoding_time:.4f}s ({num_iterations} operations)")
+    print(f"   Decoding: {decoding_time:.4f}s ({num_iterations} operations)")
+    print(f"   Encoding speed: {test_text_bytes * num_iterations / encoding_time:,.0f} bytes/sec")
+    print(f"   Decoding speed: {test_text_bytes * num_iterations / decoding_time:,.0f} bytes/sec")
+    print(f"   Tokens/sec: {num_tokens * num_iterations / encoding_time:,.0f}")
     print()
     
-    print("All tests completed successfully!")
+    # Summary
+    print("=" * 80)
+    if all_passed:
+        print("ALL TESTS PASSED!")
+    else:
+        print("SOME TESTS FAILED - Check output above")
+    print("=" * 80)
+    
+    return all_passed
 
-def interactive_test():
+
+def interactive_test(tokenizer_dir=None):
+    # Try to load tokenizer
+    if tokenizer_dir is None:
+        possible_dirs = ["tokenizer", "turkish_tokenizer", "out/tokenizer"]
+        for dir_path in possible_dirs:
+            if os.path.exists(dir_path):
+                pickle_path = os.path.join(dir_path, "tokenizer.pkl")
+                if os.path.exists(pickle_path):
+                    tokenizer_dir = dir_path
+                    break
     
-    model_file = Path('turkish_tokenizer/turkish_tokenizer.model')
-    
-    if not model_file.exists():
-        print("Model file not found!")
+    if tokenizer_dir is None or not os.path.exists(tokenizer_dir):
+        print("Tokenizer directory not found!")
         return
     
-    sp = spm.SentencePieceProcessor()
-    sp.load(str(model_file))
+    try:
+        tokenizer = create_tokenizer(tokenizer_dir=tokenizer_dir)
+    except Exception as e:
+        print(f"Failed to load tokenizer: {e}")
+        return
     
-    print("Interactive Turkish Tokenizer Test")
-    print("=" * 50)
-    print("Type 'exit' to quit")
-    print("Try using special tokens like <|beginoftext|> in your input!")
+    print("=" * 80)
+    print("INTERACTIVE TOKENIZER TEST")
+    print("=" * 80)
+    print("Type 'exit' or 'quit' to exit")
+    print("Try using special tokens like <|bos|>, <|user_start|>, etc.")
     print()
     
     while True:
         try:
             text = input("Enter text to tokenize: ").strip()
             
-            if text.lower() in ['exit', 'quit']:
-                print("See you later!")
+            if text.lower() in ['exit', 'quit', 'q']:
+                print("Goodbye!")
                 break
             
             if not text:
                 continue
             
-            tokens = sp.encode(text, out_type=str)
-            token_ids = sp.encode(text, out_type=int)
+            # Encode
+            tokens = tokenizer.encode(text, add_special_tokens=False)
+            token_ids = tokens if isinstance(tokens, list) else tokens[0] if isinstance(tokens[0], list) else tokens
             
-            print(f"   Tokens: {tokens}")
-            print(f"   Token IDs: {token_ids}")
-            print(f"   Token count: {len(tokens)}")
-            print(f"   Compression ratio: {len(text) / len(tokens):.2f} chars/token")
+            # Decode
+            decoded = tokenizer.decode(token_ids, skip_special_tokens=False)
             
-            decoded = sp.decode(token_ids)
+            # Display results
+            print(f"   Input: {text}")
+            print(f"   Token IDs: {token_ids[:20]}{'...' if len(token_ids) > 20 else ''}")
+            print(f"   Token count: {len(token_ids)}")
+            print(f"   Compression: {len(text.encode('utf-8')) / len(token_ids):.2f} bytes/token")
             print(f"   Decoded: {decoded}")
-            print(f"   {'Perfect match!' if text == decoded else 'Mismatch detected'}")
-            print("-" * 50)
+            print(f"   {'OK' if text == decoded else 'NOT OK'} Perfect match!")
+            print("-" * 80)
             
         except KeyboardInterrupt:
             print("\nGoodbye!")
             break
         except Exception as e:
             print(f"Error: {e}")
+            print("-" * 80)
+
 
 if __name__ == "__main__":
-    import sys
+    import argparse
     
-    if len(sys.argv) > 1 and sys.argv[1] == "--interactive":
-        interactive_test()
+    parser = argparse.ArgumentParser(description="Test tokenizer")
+    parser.add_argument(
+        "--interactive", "-i",
+        action="store_true",
+        help="Run in interactive mode"
+    )
+    parser.add_argument(
+        "--tokenizer-dir", "-d",
+        type=str,
+        default=None,
+        help="Tokenizer directory path (default: auto-detect)"
+    )
+    
+    args = parser.parse_args()
+    
+    if args.interactive:
+        interactive_test(args.tokenizer_dir)
     else:
-        test_tokenizer() 
+        success = test_tokenizer(args.tokenizer_dir)
+        sys.exit(0 if success else 1)
