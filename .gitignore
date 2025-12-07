@@ -7,3 +7,4 @@ model/
 __pycache__/
 
 rustbpe/target
+tokenizer
