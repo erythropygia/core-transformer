@@ -1,8 +1,12 @@
 import os
+import sys
 import time
 import argparse
 import torch
 from pathlib import Path
+
+# Add parent directory to path so we can import transformer_train
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Import RustBPE tokenizer
 from transformer_train.transformer.tokenizer import RustBPETokenizer, SPECIAL_TOKENS
@@ -173,10 +177,6 @@ print(f"  Training time: {train_time:.2f}s")
 
 # Log to report
 try:
-    import sys
-    import os
-    # Add transformer_train to path
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
     from transformer_train.transformer.report import get_report
     get_report().log(section="Tokenizer training", data=[
         vars(args), # argparse command line arguments
