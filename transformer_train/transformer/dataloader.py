@@ -77,6 +77,9 @@ def tokenizing_distributed_data_loader_with_state(
                     rg_idx += ddp_world_size  # advance to next row group (DDP)
                 
                 pq_idx += 1  # advance to next parquet file
+                if pq_idx >= len(parquet_paths):
+                    # Reset to beginning for infinite iteration
+                    pq_idx = 0
     
     batches = document_batches()
     
@@ -131,4 +134,3 @@ def tokenizing_distributed_data_loader_with_state(
 def tokenizing_distributed_data_loader(*args, **kwargs):
     for inputs, targets, state_dict in tokenizing_distributed_data_loader_with_state(*args, **kwargs):
         yield inputs, targets
-
