@@ -10,8 +10,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Import RustBPE tokenizer
 from transformer_train.transformer.tokenizer import RustBPETokenizer, SPECIAL_TOKENS
-
-
 def text_iterator_from_dataset(dataset_name="musabg/wikipedia-tr-summarization", max_chars=10_000_000_000, doc_cap=10_000):
     from datasets import load_dataset
     from tqdm import tqdm

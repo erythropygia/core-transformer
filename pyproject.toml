@@ -1,0 +1,16 @@
+[project]
+name = "core-transformer"
+version = "0.1.0"
+description = "Core transformer training code"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "rustbpe"
+bindings = "pyo3"
+python-source = "."
+manifest-path = "rustbpe/Cargo.toml"
+

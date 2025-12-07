@@ -5,3 +5,5 @@ model/
 
 *.pyc
 __pycache__/
+
+rustbpe/target
