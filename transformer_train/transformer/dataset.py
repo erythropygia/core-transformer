@@ -33,23 +33,28 @@ class TransformerDataset(Dataset):
         return torch.tensor(input_seq, dtype=torch.long), torch.tensor(target_seq, dtype=torch.long)
     
 
-def load_and_preprocess_data(max_samples=150000):
+def load_and_preprocess_data(max_samples=150000, dataset_name=None, text_column='text'):
     def clean_text(text: str) -> str:
         text = unicodedata.normalize("NFKC", text)
         text = re.sub(r'\[.*?\]|\(.*?\)', '', text)
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
     
-    dataset = load_dataset("musabg/wikipedia-tr-summarization", split='train')
+    # Use provided dataset or default
+    if dataset_name is None:
+        dataset_name = "musabg/wikipedia-tr-summarization"
+    
+    dataset = load_dataset(dataset_name, split='train')
     processed_texts = []
     
+    print(f"Dataset: {dataset_name}")
     print(f"Dataset total size: {len(dataset):,}")
     
-    max_samples = min(len(dataset), max_samples)
+    max_samples = min(len(dataset), max_samples) if max_samples else len(dataset)
     
     for i in tqdm(range(max_samples), desc="Processing texts"):
-        text = clean_text(dataset[i]["text"])
-        if len(text) > 100:  # Longer texts for better training
+        text = clean_text(dataset[i].get(text_column, ''))
+        if len(text) > 50:  # Minimum length filter
             processed_texts.append(text)
         
         if i % 10000 == 0:

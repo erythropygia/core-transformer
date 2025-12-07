@@ -91,31 +91,56 @@ TRAINING_STAGE_DATASET_MAP = {
 # Base Training (Pretraining) Dataset Config
 # Kullanım: training_stage='base' olduğunda bu config kullanılır
 BASE_DATASET_CONFIG = {
-    'type': 'parquet',  # 'parquet' or 'huggingface'
+    'type': 'parquet',  # Parquet files from lumees/turkish-corpus-100b
     'data_dir': 'base_data',  # Directory containing parquet files
-    'huggingface_dataset': None,  # If type is 'huggingface', specify dataset name
-    'huggingface_config': None,  # Optional config name
-    'text_column': 'text',  # Column name in parquet/dataset
+    'text_column': 'text',  # Column name in parquet files
     'max_samples': None,  # None = use all
 }
 
 # Mid Training Dataset Config (Structured tasks)
 # Kullanım: training_stage='mid' olduğunda bu config kullanılır
-# Türkçe dataset'ler: Wikipedia, news, QA, math
+# Türkçe dataset'ler: Wikipedia, news, QA, math (all from parquet files)
 MID_DATASET_CONFIG = {
     'datasets': [
-        {'type': 'wikipedia', 'split': 'train', 'max_samples': 10000},  # Türkçe Wikipedia
-        {'type': 'news', 'split': 'train', 'max_samples': 5000},        # Türkçe haberler
-        {'type': 'qa', 'split': 'train', 'max_samples': 2000},          # Türkçe soru-cevap
-        {'type': 'math', 'split': 'train', 'max_samples': 1000},        # Türkçe matematik
+        {
+            'type': 'wikipedia', 
+            'data_dir': 'mid_data/wikipedia',  # Parquet files directory
+            'text_column': 'text',
+            'max_samples': None  # None = use all
+        },
+        {
+            'type': 'news', 
+            'data_dir': 'mid_data/news',  # Parquet files directory
+            'text_column': 'text',
+            'max_samples': None  # None = use all
+        },
+        {
+            'type': 'qa', 
+            'data_dir': 'mid_data/qa',  # Parquet files directory
+            'question_column': 'question',
+            'answer_column': 'answer',
+            'max_samples': None  # None = use all
+        },
+        {
+            'type': 'math', 
+            'data_dir': 'mid_data/math',  # Parquet files directory
+            'question_column': 'soru',
+            'answer_column': 'solution',
+            'max_samples': None  # None = use all
+        },
     ]
 }
 
 # SFT (Chat) Dataset Config
 # Kullanım: training_stage='sft' olduğunda bu config kullanılır
-# Türkçe conversation dataset'leri
+# Türkçe conversation dataset'leri (parquet files)
 SFT_DATASET_CONFIG = {
     'datasets': [
-        {'type': 'chat', 'split': 'train', 'max_samples': 5000},  # Türkçe chat conversations
+        {
+            'type': 'chat', 
+            'data_dir': 'sft_data',  # Parquet files directory
+            'messages_column': 'messages',  # Column name in parquet files
+            'max_samples': None  # None = use all
+        },
     ]
 }

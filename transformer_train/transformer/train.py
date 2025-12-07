@@ -232,10 +232,10 @@ def train(
             print(f"Loaded {len(full_corpus):,} conversation samples from SFT datasets")
             
         else:
-            # Fallback to HuggingFace dataset (legacy)
-            print(f"\nLoading data from HuggingFace (max {TRAINING_CONFIG['max_data_samples']:,} samples)...")
-            full_corpus = load_and_preprocess_data(max_samples=TRAINING_CONFIG['max_data_samples'])
-            print(f"Loaded {len(full_corpus):,} text samples")
+            # Base training fallback (should not happen if parquet files exist)
+            print(f"\nWarning: Parquet streaming not available, but base training requires parquet files.")
+            print(f"Please ensure parquet files are in: {data_dir}")
+            raise FileNotFoundError(f"Parquet files not found in {data_dir}. Base training requires parquet files.")
         
         print("Tokenizing data...")
         all_tokens = []
