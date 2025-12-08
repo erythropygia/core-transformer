@@ -5,6 +5,10 @@ import argparse
 import torch
 from pathlib import Path
 
+"""
+python3 tokenizer_train/train_tokenizer.py   --data_dir dataset/base_data   --text_column text   --vocab_size 32000   --output_dir tokenizer   --max_chars 1_000_000_000  --progress
+"""
+
 # Add parent directory to path so we can import transformer_train
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -77,7 +81,7 @@ def text_iterator_from_file(corpus_file, max_chars=10_000_000_000, doc_cap=10_00
 
 parser = argparse.ArgumentParser(description='Train a BPE tokenizer using RustBPE')
 parser.add_argument('--max_chars', type=int, default=10_000_000_000, 
-                   help='Maximum characters to train on (default: 10B)')
+                   help='Maximum characters to train on (default: 10B, set <=0 for unlimited)')
 parser.add_argument('--doc_cap', type=int, default=10_000, 
                    help='Maximum characters per document (default: 10,000)')
 parser.add_argument('--vocab_size', type=int, default=65536, 
@@ -88,6 +92,11 @@ parser.add_argument('--dataset', type=str, default='musabg/wikipedia-tr-summariz
                    help='HuggingFace dataset name (default: musabg/wikipedia-tr-summarization)')
 parser.add_argument('--corpus_file', type=str, default=None,
                    help='Alternative: path to text file (one document per line)')
+parser.add_argument('--data_dir', type=str, default=None,
+                   help='Alternative: directory containing parquet files (uses text_column)')
+parser.add_argument('--text_column', type=str, default='text',
+                   help='Text column name in parquet files (default: text)')
+parser.add_argument('--progress', action='store_true', help='Show tqdm progress while iterating data')
 args = parser.parse_args()
 
 print(f"Tokenizer Training Configuration:")
@@ -97,16 +106,71 @@ print(f"  vocab_size: {args.vocab_size:,}")
 print(f"  output_dir: {args.output_dir}")
 print(f"  dataset: {args.dataset}")
 print(f"  corpus_file: {args.corpus_file}")
+print(f"  data_dir: {args.data_dir}")
+print(f"  text_column: {args.text_column}")
+print(f"  progress: {args.progress}")
 
 # -----------------------------------------------------------------------------
 # Text iterator
 
+max_chars = args.max_chars
+if max_chars is not None and max_chars <= 0:
+    max_chars = float('inf')
+
+def with_progress(iterable, desc="Documents"):
+    if not args.progress:
+        return iterable
+    try:
+        from tqdm import tqdm
+        return tqdm(iterable, desc=desc, smoothing=0.01)
+    except ImportError:
+        print("tqdm not installed; progress disabled. Install via `pip install tqdm`.")
+        return iterable
+
+
 if args.corpus_file:
     print(f"Using corpus file: {args.corpus_file}")
-    text_iter = text_iterator_from_file(args.corpus_file, args.max_chars, args.doc_cap)
+    text_iter = text_iterator_from_file(args.corpus_file, max_chars, args.doc_cap)
+    text_iter = with_progress(text_iter, desc="Corpus lines")
+elif args.data_dir:
+    # Load local parquet files with HuggingFace datasets (streaming to save memory)
+    from datasets import load_dataset
+
+    def text_iterator_from_parquet_dir(data_dir: str, text_column: str, max_chars: int, doc_cap: int):
+        import re
+        import unicodedata
+        data_files = {"train": str(Path(data_dir) / "*.parquet")}
+        ds = load_dataset("parquet", data_files=data_files, split="train", streaming=True)
+
+        def clean_text(text: str) -> str:
+            text = unicodedata.normalize("NFKC", text)
+            text = re.sub(r'\s+', ' ', text)
+            return text.strip()
+
+        nchars = 0
+        for row in ds:
+            raw = row.get(text_column, "")
+            doc_text = clean_text(str(raw))
+
+            if len(doc_text) < 20:
+                continue
+            if len(doc_text) > doc_cap:
+                doc_text = doc_text[:doc_cap]
+
+            nchars += len(doc_text)
+            yield doc_text
+
+            if max_chars != float('inf') and nchars > max_chars:
+                print(f"Reached max_chars limit: {nchars:,} characters")
+                break
+
+    print(f"Using parquet directory: {args.data_dir} (column: {args.text_column})")
+    text_iter = text_iterator_from_parquet_dir(args.data_dir, args.text_column, max_chars, args.doc_cap)
+    text_iter = with_progress(text_iter, desc="Parquet docs")
 else:
     print(f"Using HuggingFace dataset: {args.dataset}")
-    text_iter = text_iterator_from_dataset(args.dataset, args.max_chars, args.doc_cap)
+    text_iter = text_iterator_from_dataset(args.dataset, max_chars, args.doc_cap)
+    text_iter = with_progress(text_iter, desc="HF docs")
 
 # -----------------------------------------------------------------------------
 # Train the tokenizer

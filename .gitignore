@@ -8,3 +8,6 @@ __pycache__/
 
 rustbpe/target
 tokenizer
+dataset/base_data
+dataset/mid_data
+dataset/sft_data
