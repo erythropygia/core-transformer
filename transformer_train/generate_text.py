@@ -23,11 +23,12 @@ project_root = script_dir.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from transformer_train.transformer.train import load_checkpoint
+from transformer_train.transformer.training.train import load_checkpoint
 from transformer_train.transformer.tokenizer import create_tokenizer
-from transformer_train.transformer.transformer_block import Transformer
-from transformer_train.transformer.engine import Engine
+from transformer_train.transformer.model.transformer_block import Transformer
+from transformer_train.transformer.model.engine import Engine
 from transformer_train.transformer.common import get_dist_info, autodetect_device_type
+
 from safetensors import safe_open
 from safetensors.torch import load_file
 import json
