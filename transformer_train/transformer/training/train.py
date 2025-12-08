@@ -1,4 +1,5 @@
 import os
+import math
 import torch
 from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
@@ -92,6 +93,11 @@ def train(
     print(f"Mixed Precision: OK")
     print(f"CPU Offloading: OK")
     print(f"DeepSpeed: {'OK' if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed'] else 'NO'}")
+    
+    # Mixed precision settings
+    use_mixed_precision = device_type == 'cuda' and TRAINING_CONFIG.get('use_mixed_precision', True)
+    use_bfloat16 = use_mixed_precision and torch.cuda.is_bf16_supported()
+    autocast_dtype = torch.bfloat16 if use_bfloat16 else torch.float16
     
     if use_wandb and TRAINING_CONFIG['use_wandb']:
         wandb.init(
@@ -286,7 +292,22 @@ def train(
         build_val_loader = lambda: val_loader
         dataloader_state_dict = None
     
-    print(f"Effective batch size: {TRAINING_CONFIG['batch_size'] * TRAINING_CONFIG['accumulation_steps']}")
+    effective_batch_size = TRAINING_CONFIG['batch_size'] * TRAINING_CONFIG['accumulation_steps']
+    tokens_per_step = effective_batch_size * MODEL_CONFIG['block_size']
+    
+    # Derive steps_per_epoch for both streaming and sized dataloaders
+    tokens_per_epoch = TRAINING_CONFIG.get('tokens_per_epoch')
+    if use_parquet_streaming:
+        tokens_per_epoch = dataset_config.get('tokens_per_epoch', tokens_per_epoch)
+        if tokens_per_epoch is None:
+            raise ValueError("tokens_per_epoch must be set in TRAINING_CONFIG or dataset config for streaming dataloader.")
+        steps_per_epoch = math.ceil(tokens_per_epoch / tokens_per_step)
+    else:
+        steps_per_epoch = len(train_loader) // TRAINING_CONFIG['accumulation_steps']
+    
+    print(f"Effective batch size: {effective_batch_size}")
+    print(f"Tokens per optimizer step: {tokens_per_step:,}")
+    print(f"Planned steps per epoch: {steps_per_epoch:,}")
     
     # Initialize model (with meta device support for memory efficiency)
     print(f"\nInitializing Transformer...")
@@ -401,15 +422,20 @@ def train(
             muon_optimizer = None
         
         # Scheduler
-        total_steps = len(train_loader) * TRAINING_CONFIG['max_epochs'] // TRAINING_CONFIG['accumulation_steps']
-        warmup_steps = len(train_loader) * TRAINING_CONFIG['warmup_epochs'] // TRAINING_CONFIG['accumulation_steps']
+        total_steps = steps_per_epoch * TRAINING_CONFIG['max_epochs']
+        warmup_steps = min(
+            total_steps,
+            max(1, int(steps_per_epoch * TRAINING_CONFIG['warmup_epochs']))
+        )
         
         scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
         print(f"Scheduler: Cosine with warmup ({warmup_steps:,} warmup steps)")
         
         # Mixed precision scaler
-        scaler = GradScaler(device_type) if device_type == 'cuda' else None
-        print(f"Mixed precision: {'OK' if scaler else 'NO'}")
+        use_grad_scaler = use_mixed_precision and not use_bfloat16
+        scaler = GradScaler(device_type) if use_grad_scaler else None
+        print(f"Mixed precision: {'bf16' if use_bfloat16 else 'fp16' if use_mixed_precision else 'disabled'}"
+              f" ({'GradScaler' if scaler else 'no scaler'})")
     
         # Resume logic (skip for pretrained)
     if not pretrained_model_path:
@@ -428,7 +454,6 @@ def train(
                 global_step = resume_info['global_step']
                 best_val_loss = resume_info['best_val_loss']
                 
-                steps_per_epoch = len(train_loader) // TRAINING_CONFIG['accumulation_steps']
                 calculated_epoch = global_step // steps_per_epoch if steps_per_epoch > 0 else 0
                 
                 print(f"RESUME ANALYSIS:")
@@ -502,12 +527,12 @@ def train(
             # Streaming dataloader: infinite iterator, iteration-based
             max_iterations = TRAINING_CONFIG.get('max_iterations', None)
             if max_iterations is None:
-                # Estimate iterations from epochs (approximate)
-                estimated_batches_per_epoch = 1000  # placeholder - adjust based on your data
-                max_iterations = estimated_batches_per_epoch * TRAINING_CONFIG['max_epochs']
+                # Exact iteration budget derived from tokens_per_epoch
+                max_iterations = steps_per_epoch * TRAINING_CONFIG['accumulation_steps']
             
             print(f"  Using iteration-based training (streaming)")
-            print(f"  Max iterations: {max_iterations:,}")
+            print(f"  Max iterations (microbatches): {max_iterations:,}")
+            print(f"  Optimizer steps per epoch: {steps_per_epoch:,}")
             print(f"  Accumulation steps: {TRAINING_CONFIG['accumulation_steps']}")
             
             batch_counter = 0
@@ -527,7 +552,11 @@ def train(
                 iteration += 1
                 
                 # Forward pass with mixed precision
-                with autocast(device_type=device_type, enabled=(device_type == 'cuda' and not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']))):
+                with autocast(
+                    device_type=device_type,
+                    dtype=autocast_dtype,
+                    enabled=(use_mixed_precision and not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']))
+                ):
                     logits, loss = model.forward(inputs, targets=targets)
                     if not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']):
                         loss = loss / TRAINING_CONFIG['accumulation_steps']
@@ -628,10 +657,14 @@ def train(
                                 else:
                                     val_inputs, val_targets = val_batch_data
                                 
-                                val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
-                                
-                                with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
-                                    _, val_loss = model.forward(val_inputs, targets=val_targets)
+                            val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+                            
+                            with autocast(
+                                device_type=device_type,
+                                dtype=autocast_dtype,
+                                enabled=use_mixed_precision
+                            ):
+                                _, val_loss = model.forward(val_inputs, targets=val_targets)
                                 
                                 quick_val_loss += val_loss.item()
                                 quick_batches += 1
@@ -676,7 +709,11 @@ def train(
                 inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
                 
                 # Forward pass with mixed precision
-                with autocast(device_type=device_type, enabled=(device_type == 'cuda' and not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']))):
+                with autocast(
+                    device_type=device_type,
+                    dtype=autocast_dtype,
+                    enabled=(use_mixed_precision and not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']))
+                ):
                     logits, loss = model.forward(inputs, targets=targets)
                     if not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']):
                         loss = loss / TRAINING_CONFIG['accumulation_steps']
@@ -780,7 +817,11 @@ def train(
                             
                             val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
                             
-                            with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
+                            with torch.autocast(
+                                    device_type=device_type,
+                                    dtype=autocast_dtype,
+                                    enabled=use_mixed_precision
+                                ):
                                 _, val_loss = model.forward(val_inputs, targets=val_targets)
                             
                             quick_val_loss += val_loss.item()

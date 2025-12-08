@@ -14,6 +14,15 @@ from contextlib import nullcontext
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
 
+import sys
+from pathlib import Path
+
+# Add parent directory to path so imports work when running script directly
+script_dir = Path(__file__).parent
+project_root = script_dir.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from transformer_train.transformer.train import load_checkpoint
 from transformer_train.transformer.tokenizer import create_tokenizer
 from transformer_train.transformer.transformer_block import Transformer

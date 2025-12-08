@@ -15,17 +15,17 @@ TRAINING_CONFIG = {
     # Training stage: 'base' (pretraining), 'mid' (mid-training), 'sft' (chat fine-tuning)
     'training_stage': 'base',  # Config'den hangi stage'in hangi dataset ile olacağını belirleyin
     
-    'batch_size': 4,       
+    'batch_size': 1,       
     'learning_rate': 6e-4,  # Legacy: used if use_muon_optimizer is False
     'weight_decay': 0.1,   
     'beta1': 0.9,
     'beta2': 0.95,
     'grad_clip': 1.0,
     'warmup_epochs': 3,     
-    'max_epochs': 50,       
+    'max_epochs': 1,       
     'eval_interval': 2,     
     'save_interval': 5,     
-    'accumulation_steps': 8,  
+    'accumulation_steps': 16,  
     'use_wandb': True,
     'compile_model': False,
     'scheduler_type': 'cosine_with_warmup',
@@ -44,6 +44,12 @@ TRAINING_CONFIG = {
     'dataloader_num_workers': 2, 
     'pin_memory': True,         
     'prefetch_factor': 2,        
+
+    # Token accounting (streaming datasets)
+    # Base pretraining corpus ~100B tokens across ~400 parquet shards.
+    # tokens_per_epoch is used to derive scheduler steps when the dataloader
+    # is streaming and has no length.
+    'tokens_per_epoch': 100_000_000_000,
     
     # Progress reporting
     'log_interval': 50,     
@@ -95,6 +101,7 @@ BASE_DATASET_CONFIG = {
     'data_dir': 'dataset/base_data',  # Directory containing parquet files
     'text_column': 'text',  # Column name in parquet files
     'max_samples': None,  # None = use all
+    'tokens_per_epoch': 80_000_000_000,  # One full sweep over ~400 shards (~100B tokens)
 }
 
 # Mid Training Dataset Config (Structured tasks)
