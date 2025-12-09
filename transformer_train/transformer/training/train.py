@@ -329,7 +329,7 @@ def train(
     
     # Compile model for better performance (before optimizer setup)
     if device_type == 'cuda':
-        print("\nCompiling model with torch.compile...")
+        print("\n🚀 Compiling model with torch.compile...")
         model = torch.compile(model, dynamic=False)
         print("Model compiled successfully!")
     
@@ -713,12 +713,17 @@ def train(
                         for test_idx, prompt in enumerate(TEST_PROMPTS[:3]):  # Test first 3 prompts
                             try:
                                 with torch.no_grad():
-                                    generated = model.generate_from_prompt(
-                                        prompt,
-                                        max_new_tokens=50,
-                                        temperature=0.8,
-                                        top_k=40
-                                    )
+                                    with autocast(
+                                        device_type=device_type,
+                                        dtype=autocast_dtype,
+                                        enabled=use_mixed_precision
+                                    ):
+                                        generated = model.generate_from_prompt(
+                                            prompt,
+                                            max_new_tokens=50,
+                                            temperature=0.8,
+                                            top_k=40
+                                        )
                                     print(f"    [{test_idx+1}] Prompt: {prompt}")
                                     print(f"        Output: {generated[:100]}{'...' if len(generated) > 100 else ''}")
                             except Exception as e:
@@ -907,12 +912,17 @@ def train(
                     for test_idx, prompt in enumerate(TEST_PROMPTS[:3]):  # Test first 3 prompts
                         try:
                             with torch.no_grad():
-                                generated = model.generate_from_prompt(
-                                    prompt,
-                                    max_new_tokens=50,
-                                    temperature=0.8,
-                                    top_k=40
-                                )
+                                with autocast(
+                                    device_type=device_type,
+                                    dtype=autocast_dtype,
+                                    enabled=use_mixed_precision
+                                ):
+                                    generated = model.generate_from_prompt(
+                                        prompt,
+                                        max_new_tokens=50,
+                                        temperature=0.8,
+                                        top_k=40
+                                    )
                                 print(f"    [{test_idx+1}] Prompt: {prompt}")
                                 print(f"        Output: {generated[:100]}{'...' if len(generated) > 100 else ''}")
                         except Exception as e:
@@ -1301,25 +1311,35 @@ def generate(text,
     
     model.eval()
     
+    device_type = 'cuda' if device.type == 'cuda' else 'cpu'
+    use_bfloat16 = use_half_precision and torch.cuda.is_bf16_supported() if device_type == 'cuda' else False
+    autocast_dtype = torch.bfloat16 if use_bfloat16 else torch.float16
+    
     with torch.no_grad():
         try:
-            generated_text = model.generate_from_prompt(
-                text, 
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k
-            )
+            with autocast(
+                device_type=device_type,
+                dtype=autocast_dtype,
+                enabled=(use_half_precision and device_type == 'cuda')
+            ):
+                generated_text = model.generate_from_prompt(
+                    text, 
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k
+                )
         except Exception as e:
             # Fallback to CPU with full precision
             model = model.float().cpu()
-            generated_text = model.generate_from_prompt(
-                text, 
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k
-            )
+            with autocast(device_type='cpu', enabled=False):
+                generated_text = model.generate_from_prompt(
+                    text, 
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k
+                )
     
     cleanup_memory()
     

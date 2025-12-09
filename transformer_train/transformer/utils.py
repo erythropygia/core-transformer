@@ -114,7 +114,7 @@ def calculate_perplexity(model, data_loader, device, device_type, max_batches=50
     return perplexity
 
 @torch.no_grad() 
-def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_tokens=30):
+def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_tokens=30, device_type='cuda', use_mixed_precision=True):
     model.eval()
     results = {
         'samples': [],
@@ -126,15 +126,24 @@ def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_
     all_tokens = set()
     total_tokens = 0
     
+    # Determine autocast dtype
+    use_bfloat16 = use_mixed_precision and torch.cuda.is_bf16_supported() if device_type == 'cuda' else False
+    autocast_dtype = torch.bfloat16 if use_bfloat16 else torch.float16
+    
     for prompt in test_prompts:
         try:
-            generated = model.generate_from_prompt(
-                prompt, 
-                max_new_tokens=max_new_tokens,
-                temperature=0.8,
-                top_p=0.9,
-                top_k=50
-            )
+            with torch.amp.autocast(
+                device_type=device_type,
+                dtype=autocast_dtype,
+                enabled=use_mixed_precision
+            ):
+                generated = model.generate_from_prompt(
+                    prompt, 
+                    max_new_tokens=max_new_tokens,
+                    temperature=0.8,
+                    top_p=0.9,
+                    top_k=50
+                )
             
             # Extract generated part
             prompt_tokens = tokenizer.encode(prompt, add_special_tokens=False)
@@ -207,8 +216,10 @@ def evaluate_model_comprehensive(model, val_loader, tokenizer, device, device_ty
     
     try:
         num_samples = config.get('eval_generation_samples', 3)
+        use_mixed_precision = config.get('use_mixed_precision', True)
         gen_results = evaluate_generation_quality(
-            model, tokenizer, TEST_PROMPTS[:num_samples], device
+            model, tokenizer, TEST_PROMPTS[:num_samples], device,
+            device_type=device_type, use_mixed_precision=use_mixed_precision
         )
         metrics['generation'] = gen_results
         metrics['avg_gen_length'] = gen_results['avg_length']
