@@ -11,7 +11,7 @@ TRAINING_CONFIG = {
     # Training stage: 'base' (pretraining), 'mid' (mid-training), 'sft' (chat fine-tuning)
     'training_stage': 'base',
     
-    'batch_size': 1,       
+    'batch_size': 4,       
     'learning_rate': 6e-4,  # Used if use_muon_optimizer is False
     'weight_decay': 0.1,   
     'beta1': 0.9,
@@ -46,6 +46,11 @@ TRAINING_CONFIG = {
     'log_interval': 50,     # Log every 50 steps
     'eval_steps': 1000,     # Evaluate + generate samples every 1000 steps
     'checkpoint_steps': 1000,  # Save checkpoint every 500 steps  
+    
+    # Data shuffling for better training
+    'shuffle_parquet_files': True,  # Shuffle parquet file order each epoch
+    'shuffle_seed': 42,  # Seed for reproducibility (None = random each run)
+    'reshuffle_each_epoch': True,  # Re-shuffle parquet order every epoch
     
     # Early stopping
     'early_stopping_patience': 8,  

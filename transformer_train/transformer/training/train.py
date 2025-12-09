@@ -165,7 +165,10 @@ def train(
                 tokenizer_path=tokenizer_path,
                 device=str(device),
                 resume_state_dict=dataloader_resume_state_dict,
-                data_dir=data_dir
+                data_dir=data_dir,
+                shuffle_parquet_files=TRAINING_CONFIG.get('shuffle_parquet_files', True),
+                shuffle_seed=TRAINING_CONFIG.get('shuffle_seed', 42),
+                reshuffle_each_epoch=TRAINING_CONFIG.get('reshuffle_each_epoch', True)
             )
             
             build_val_loader = lambda: tokenizing_distributed_data_loader(
@@ -329,7 +332,7 @@ def train(
     
     # Compile model for better performance (before optimizer setup)
     if device_type == 'cuda':
-        print("\n🚀 Compiling model with torch.compile...")
+        print("\nCompiling model with torch.compile...")
         model = torch.compile(model, dynamic=False)
         print("Model compiled successfully!")
     
@@ -1094,6 +1097,7 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
         if dataloader_state_dict is not None:
             metadata['parquet_index'] = str(dataloader_state_dict.get('pq_idx', 0))
             metadata['row_group_index'] = str(dataloader_state_dict.get('rg_idx', 0))
+            metadata['epoch'] = str(dataloader_state_dict.get('epoch', 0))
         
         metadata_path = checkpoint_path.replace('.safetensors', '_metadata.json')
         with open(metadata_path, 'w') as f:
@@ -1131,6 +1135,7 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
         if dataloader_state_dict is not None:
             metadata['parquet_index'] = str(dataloader_state_dict.get('pq_idx', 0))
             metadata['row_group_index'] = str(dataloader_state_dict.get('rg_idx', 0))
+            metadata['epoch'] = str(dataloader_state_dict.get('epoch', 0))
         
         # Save to SafeTensors
         save_file(model_state, checkpoint_path, metadata=metadata)

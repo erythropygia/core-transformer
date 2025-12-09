@@ -3,6 +3,7 @@ from collections import deque
 import torch
 import pyarrow.parquet as pq
 from typing import Optional
+import random
 
 from ..common import get_dist_info
 from .dataset_utils import list_parquet_files
@@ -19,7 +20,10 @@ def tokenizing_distributed_data_loader_with_state(
     tokenizer_batch_size: int = 128,
     device: str = "cuda",
     resume_state_dict: Optional[dict] = None,
-    data_dir: Optional[str] = None
+    data_dir: Optional[str] = None,
+    shuffle_parquet_files: bool = True,
+    shuffle_seed: Optional[int] = 42,
+    reshuffle_each_epoch: bool = True
 ):
     assert split in ["train", "val"], "split must be 'train' or 'val'"
     
@@ -46,15 +50,26 @@ def tokenizing_distributed_data_loader_with_state(
     # Split train/val (last file is val)
     parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
     
+    # Initial shuffle of parquet files (for training only)
+    if split == "train" and shuffle_parquet_files:
+        if shuffle_seed is not None:
+            random.seed(shuffle_seed)
+        random.shuffle(parquet_paths)
+        print(f"Shuffled {len(parquet_paths)} parquet files (seed: {shuffle_seed})")
+        print(f"   First 3 files: {[os.path.basename(p) for p in parquet_paths[:3]]}")
+    
     # Infinite iterator over document batches
     def document_batches():
         resume_pq_idx = resume_state_dict.get("pq_idx", 0) if resume_state_dict is not None else 0
         resume_rg_idx = resume_state_dict.get("rg_idx", None) if resume_state_dict is not None else None
+        resume_epoch = resume_state_dict.get("epoch", 0) if resume_state_dict is not None else 0
         pq_idx = resume_pq_idx
+        current_epoch = resume_epoch
+        epoch_parquet_order = parquet_paths.copy()  # Initial order
         
         while True:  # iterate infinitely (multi-epoch)
-            while pq_idx < len(parquet_paths):  # iterate over all parquet files
-                filepath = parquet_paths[pq_idx]
+            while pq_idx < len(epoch_parquet_order):  # iterate over all parquet files
+                filepath = epoch_parquet_order[pq_idx]
                 pf = pq.ParquetFile(filepath)
                 
                 # Start from resume point if resuming on same file, otherwise from DDP rank
@@ -72,14 +87,26 @@ def tokenizing_distributed_data_loader_with_state(
                     
                     # Tokenizer encode might want smaller batches
                     for i in range(0, len(batch), tokenizer_batch_size):
-                        yield batch[i:i+tokenizer_batch_size], (pq_idx, rg_idx)
+                        yield batch[i:i+tokenizer_batch_size], (pq_idx, rg_idx, current_epoch)
                     
                     rg_idx += ddp_world_size  # advance to next row group (DDP)
                 
                 pq_idx += 1  # advance to next parquet file
-                if pq_idx >= len(parquet_paths):
-                    # Reset to beginning for infinite iteration
+                
+                # End of epoch - reshuffle if enabled
+                if pq_idx >= len(epoch_parquet_order):
+                    current_epoch += 1
                     pq_idx = 0
+                    
+                    # Re-shuffle parquet files for next epoch
+                    if split == "train" and shuffle_parquet_files and reshuffle_each_epoch:
+                        if shuffle_seed is not None:
+                            random.seed(shuffle_seed + current_epoch)  # Different seed per epoch
+                        epoch_parquet_order = parquet_paths.copy()
+                        random.shuffle(epoch_parquet_order)
+                        if ddp_rank == 0:  # Only print from main process
+                            print(f"\nEpoch {current_epoch}: Reshuffled parquet files")
+                            print(f"   First 3 files: {[os.path.basename(p) for p in epoch_parquet_order[:3]]}")
     
     batches = document_batches()
     
@@ -90,7 +117,7 @@ def tokenizing_distributed_data_loader_with_state(
     while True:
         # Accumulate enough tokens for one iteration
         while len(token_buffer) < needed_tokens:
-            doc_batch, (pq_idx, rg_idx) = next(batches)
+            doc_batch, (pq_idx, rg_idx, epoch) = next(batches)
             
             # Tokenize batch
             try:
@@ -126,7 +153,7 @@ def tokenizing_distributed_data_loader_with_state(
         targets = targets_cpu.view(B, T).to(device=device, non_blocking=use_cuda_optimizations)
         
         # State dict for resuming
-        state_dict = {"pq_idx": pq_idx, "rg_idx": rg_idx}
+        state_dict = {"pq_idx": pq_idx, "rg_idx": rg_idx, "epoch": epoch}
         
         yield inputs, targets, state_dict
 
