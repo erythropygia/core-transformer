@@ -8,25 +8,18 @@ import unicodedata
 from ..utils import cleanup_memory
 
 class TransformerDataset(Dataset):
-    def __init__(self, tokens, block_size, stride=None):
+    def __init__(self, tokens, block_size):
         self.tokens = tokens
         self.block_size = block_size
-        self.stride = stride or block_size // 2
         
-        # Memory efficient: sadece start pozisyonlarını sakla
-        self.sequences = []
-        max_start = len(tokens) - block_size
-        
-        # Stride ile overlapping sequences oluştur
-        for i in range(0, max_start, self.stride):
-            if i + block_size < len(tokens):
-                self.sequences.append(i)
+        # Calculate number of sequences (no overlap)
+        self.num_sequences = (len(tokens) - 1) // block_size
     
     def __len__(self):
-        return len(self.sequences)
+        return self.num_sequences
     
     def __getitem__(self, idx):
-        start_pos = self.sequences[idx]
+        start_pos = idx * self.block_size
         input_seq = self.tokens[start_pos:start_pos + self.block_size]
         target_seq = self.tokens[start_pos + 1:start_pos + self.block_size + 1]
         

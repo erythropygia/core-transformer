@@ -24,21 +24,6 @@ def list_parquet_files(data_dir=None):
 
 
 # -----------------------------------------------------------------------------
-# Base Training Datasets (Pretraining - Parquet files)
-# -----------------------------------------------------------------------------
-
-def get_base_dataset_config():
-    return {
-        'type': 'parquet',  # 'parquet' or 'huggingface'
-        'data_dir': 'base_data',  # Directory containing parquet files
-        'huggingface_dataset': None,  # If type is 'huggingface', specify dataset name
-        'huggingface_config': None,  # Optional config name
-        'text_column': 'text',  # Column name in parquet/dataset
-        'max_samples': None,  # None = use all
-    }
-
-
-# -----------------------------------------------------------------------------
 # Mid Training Datasets (Structured tasks - Turkish equivalents)
 # -----------------------------------------------------------------------------
 
@@ -85,8 +70,6 @@ class TurkishWikipedia(TurkishDataset):
                             count += 1
         except Exception as e:
             print(f"Warning: Could not load Turkish Wikipedia from {self.data_dir}: {e}")
-            import traceback
-            traceback.print_exc()
             return
 
 
@@ -121,8 +104,6 @@ class TurkishNews(TurkishDataset):
                             count += 1
         except Exception as e:
             print(f"Warning: Could not load Turkish news from {self.data_dir}: {e}")
-            import traceback
-            traceback.print_exc()
             return
 
 
@@ -161,8 +142,6 @@ class TurkishQA(TurkishDataset):
                             count += 1
         except Exception as e:
             print(f"Warning: Could not load Turkish QA from {self.data_dir}: {e}")
-            import traceback
-            traceback.print_exc()
             return
 
 
@@ -201,8 +180,6 @@ class TurkishMath(TurkishDataset):
                             count += 1
         except Exception as e:
             print(f"Warning: Could not load Turkish math from {self.data_dir}: {e}")
-            import traceback
-            traceback.print_exc()
             return
 
 
@@ -282,28 +259,9 @@ class TurkishChat(ConversationDataset):
                                 count += 1
         except Exception as e:
             print(f"Warning: Could not load Turkish chat from {self.data_dir}: {e}")
-            import traceback
-            traceback.print_exc()
             return
 
 
-def get_mid_dataset_config():
-    return {
-        'datasets': [
-            {'type': 'wikipedia', 'split': 'train', 'max_samples': 10000},
-            {'type': 'news', 'split': 'train', 'max_samples': 5000},
-            {'type': 'qa', 'split': 'train', 'max_samples': 2000},
-            {'type': 'math', 'split': 'train', 'max_samples': 1000},
-        ]
-    }
-
-
-def get_sft_dataset_config():
-    return {
-        'datasets': [
-            {'type': 'chat', 'split': 'train', 'max_samples': 5000},
-        ]
-    }
 
 
 def create_mid_datasets(config: Dict[str, Any]) -> TaskMixture:

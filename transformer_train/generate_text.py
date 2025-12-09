@@ -1,4 +1,6 @@
 """
+Generate text using trained transformer model.
+
 Usage:
     python generate_text.py -p "Your prompt here"
     python generate_text.py --interactive
@@ -9,25 +11,19 @@ import os
 import argparse
 import torch
 from contextlib import nullcontext
-
-# Suppress warnings
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
-
 import sys
 from pathlib import Path
 
-# Add parent directory to path so imports work when running script directly
+# Add parent directory to path
 script_dir = Path(__file__).parent
 project_root = script_dir.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from transformer_train.transformer.training.train import load_checkpoint
 from transformer_train.transformer.tokenizer import create_tokenizer
 from transformer_train.transformer.model.transformer_block import Transformer
 from transformer_train.transformer.model.engine import Engine
-from transformer_train.transformer.common import get_dist_info, autodetect_device_type
+from transformer_train.transformer.common import autodetect_device_type
 
 from safetensors import safe_open
 from safetensors.torch import load_file
@@ -48,10 +44,9 @@ def load_model(model_path, device_type="cuda", dtype="bfloat16"):
     # Parse config
     config = json.loads(metadata.get('config', '{}'))
     if not config:
-        # Try model_config
         config = json.loads(metadata.get('model_config', '{}'))
     
-    # Get tokenizer path from metadata
+    # Get tokenizer path
     tokenizer_path = metadata.get('tokenizer_path', 'tokenizer')
     
     # Load tokenizer
@@ -60,38 +55,18 @@ def load_model(model_path, device_type="cuda", dtype="bfloat16"):
     else:
         tokenizer = create_tokenizer(model_path=tokenizer_path)
     
-    # Set vocab_size from tokenizer if not in config
+    # Set vocab_size
     if 'vocab_size' not in config or config['vocab_size'] is None:
         config['vocab_size'] = tokenizer.get_vocab_size()
     
-    # Create model
+    # Create model (simple, like nanochat)
     device = torch.device(device_type)
-    ptdtype = torch.float32 if dtype == 'float32' else torch.bfloat16
-    
-    # Initialize model on meta device for memory efficiency
-    with torch.device("meta"):
-        model = Transformer(config, tokenizer)
-    
-    # Move to actual device
-    model.to_empty(device=device)
-    model.apply(model._init_weights)
-    
-    # Re-initialize rotary embeddings
-    head_dim = config['n_embd'] // config['n_head']
-    cos, sin = model._precompute_rotary_embeddings(model.rotary_seq_len, head_dim, device=device)
-    model.cos = cos.to(device)
-    model.sin = sin.to(device)
-    
-    # Special initialization for output projections
-    torch.nn.init.zeros_(model.lm_head.weight)
-    for block in model.h:
-        torch.nn.init.zeros_(block.mlp.c_proj.weight)
-        torch.nn.init.zeros_(block.attn.c_proj.weight)
+    model = Transformer(config, tokenizer).to(device)
     
     # Load weights
     model_state = load_file(model_path)
     
-    # Remove compiled model prefixes
+    # Remove compiled model prefixes if any
     new_state_dict = {}
     for k, v in model_state.items():
         if k.startswith('_orig_mod.'):
@@ -102,61 +77,62 @@ def load_model(model_path, device_type="cuda", dtype="bfloat16"):
     
     model.load_state_dict(new_state_dict, strict=False)
     
-    # Convert to appropriate dtype
+    # Convert to dtype if needed
     if device_type == "cuda" and dtype == "bfloat16":
-        model = model.to(dtype=ptdtype)
-        model.cos = model.cos.to(dtype=ptdtype)
-        model.sin = model.sin.to(dtype=ptdtype)
+        model = model.to(dtype=torch.bfloat16)
     
     model.eval()
     
     return model, tokenizer
 
 
-def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, top_k=50, device_type="cuda", dtype="bfloat16"):
+def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, top_k=50, 
+                    device_type="cuda", dtype="bfloat16"):
     device = torch.device(device_type)
-    ptdtype = torch.float32 if dtype == 'float32' else torch.bfloat16
+    ptdtype = torch.bfloat16 if dtype == 'bfloat16' else torch.float32
     autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
     
     # Create engine
     engine = Engine(model, tokenizer)
     
-    # Encode prompt
-    tokens = tokenizer.encode(prompt, add_special_tokens=False)
-    if isinstance(tokens[0], list):
-        tokens = tokens[0]
+    # Encode prompt (simple, like nanochat)
+    prompt_tokens = tokenizer.encode(prompt)
+    if isinstance(prompt_tokens, list) and len(prompt_tokens) > 0 and isinstance(prompt_tokens[0], list):
+        prompt_tokens = prompt_tokens[0]
     
     # Generate
-    generated_tokens = []
+    response_tokens = []
     with autocast_ctx:
         for token_column, token_masks in engine.generate(
-            tokens,
+            prompt_tokens,
             num_samples=1,
             max_tokens=max_tokens,
             temperature=temperature,
             top_k=top_k,
             seed=42
         ):
-            if token_masks[0] == 1:  # sampled token
-                generated_tokens.append(token_column[0])
+            token = token_column[0]  # Single sample
+            response_tokens.append(token)
     
-    # Decode
-    full_tokens = tokens + generated_tokens
-    generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=False)
+    # Decode only the generated part
+    generated_text = tokenizer.decode(response_tokens)
     
     return generated_text
 
 
-def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16", temperature=0.6, top_k=50, max_tokens=256):
+def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16", 
+                     temperature=0.6, top_k=50, max_tokens=256):
     device = torch.device(device_type)
-    ptdtype = torch.float32 if dtype == 'float32' else torch.bfloat16
+    ptdtype = torch.bfloat16 if dtype == 'bfloat16' else torch.float32
     autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
     
     # Create engine
     engine = Engine(model, tokenizer)
     
     # Special tokens
-    bos_token_id = tokenizer.get_bos_token_id()
+    bos = tokenizer.get_bos_token_id()
+    
+    # Check for chat tokens
     try:
         user_start = tokenizer.encode_special("<|user_start|>")
         user_end = tokenizer.encode_special("<|user_end|>")
@@ -168,28 +144,29 @@ def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16", tem
         print("Chat tokens not found, using simple format")
     
     print("\n" + "=" * 80)
-    print("INTERACTIVE CHAT MODE")
+    print("Interactive chat mode")
     print("=" * 80)
-    print("Type 'quit' or 'exit' to end the conversation")
-    print("Type 'clear' to start a new conversation")
+    print("Commands:")
+    print("  'quit' or 'exit' - End conversation")
+    print("  'clear' - Start new conversation")
     print("-" * 80)
     
-    conversation_tokens = [bos_token_id]
+    conversation_tokens = [bos]
     
     while True:
         try:
             user_input = input("\nUser: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye!")
+            print("\n\nGoodbye!")
             break
         
-        # Handle special commands
+        # Handle commands
         if user_input.lower() in ['quit', 'exit', 'q']:
             print("Goodbye!")
             break
         
         if user_input.lower() == 'clear':
-            conversation_tokens = [bos_token_id]
+            conversation_tokens = [bos]
             print("Conversation cleared.")
             continue
         
@@ -199,18 +176,12 @@ def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16", tem
         # Add user message
         if has_chat_tokens:
             conversation_tokens.append(user_start)
-            user_tokens = tokenizer.encode(user_input, add_special_tokens=False)
-            if isinstance(user_tokens[0], list):
-                user_tokens = user_tokens[0]
-            conversation_tokens.extend(user_tokens)
+            conversation_tokens.extend(tokenizer.encode(user_input))
             conversation_tokens.append(user_end)
             conversation_tokens.append(assistant_start)
         else:
             # Simple format: just add user input
-            user_tokens = tokenizer.encode(user_input, add_special_tokens=False)
-            if isinstance(user_tokens[0], list):
-                user_tokens = user_tokens[0]
-            conversation_tokens.extend(user_tokens)
+            conversation_tokens.extend(tokenizer.encode(user_input))
         
         # Generate response
         print("\nAssistant: ", end="", flush=True)
@@ -225,22 +196,24 @@ def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16", tem
                 top_k=top_k,
                 seed=42
             ):
-                if token_masks[0] == 1:  # sampled token
-                    token_id = token_column[0]
-                    response_tokens.append(token_id)
-                    conversation_tokens.append(token_id)
-                    
-                    # Stream output
-                    token_text = tokenizer.decode([token_id], skip_special_tokens=False)
-                    print(token_text, end="", flush=True)
-                    
-                    # Check for end token
-                    if has_chat_tokens and token_id == assistant_end:
-                        break
+                token = token_column[0]
+                response_tokens.append(token)
+                
+                # Stream output
+                token_text = tokenizer.decode([token])
+                print(token_text, end="", flush=True)
+                
+                # Check for end token
+                if has_chat_tokens and token == assistant_end:
+                    break
         
-        print()  # New line after response
+        print()  # New line
         
-        if has_chat_tokens:
+        # Update conversation (no duplicate assistant_end!)
+        conversation_tokens.extend(response_tokens)
+        
+        # Ensure assistant_end is at the end if using chat tokens
+        if has_chat_tokens and (not response_tokens or response_tokens[-1] != assistant_end):
             conversation_tokens.append(assistant_end)
 
 
@@ -248,12 +221,15 @@ def main():
     parser = argparse.ArgumentParser(description='Generate text using trained model')
     parser.add_argument('-p', '--prompt', type=str, default='', help='Prompt text (if empty, use interactive mode)')
     parser.add_argument('-i', '--interactive', action='store_true', help='Interactive chat mode')
-    parser.add_argument('-m', '--model-path', type=str, default='checkpoints/best_model_120m_8gb.safetensors', help='Path to model checkpoint')
+    parser.add_argument('-m', '--model-path', type=str, default='checkpoints/best_model_120m_8gb.safetensors', 
+                       help='Path to model checkpoint')
     parser.add_argument('-t', '--temperature', type=float, default=0.6, help='Sampling temperature')
     parser.add_argument('-k', '--top-k', type=int, default=50, help='Top-k sampling')
     parser.add_argument('--max-tokens', type=int, default=256, help='Maximum tokens to generate')
-    parser.add_argument('--device-type', type=str, default='', choices=['cuda', 'cpu', 'mps'], help='Device type (empty = autodetect)')
-    parser.add_argument('-d', '--dtype', type=str, default='bfloat16', choices=['float32', 'bfloat16'], help='Data type')
+    parser.add_argument('--device-type', type=str, default='', choices=['cuda', 'cpu', 'mps'], 
+                       help='Device type (empty = autodetect)')
+    parser.add_argument('-d', '--dtype', type=str, default='bfloat16', choices=['float32', 'bfloat16'], 
+                       help='Data type')
     
     args = parser.parse_args()
     
@@ -266,6 +242,8 @@ def main():
     try:
         model, tokenizer = load_model(args.model_path, device_type=device_type, dtype=args.dtype)
         print("Model loaded successfully!")
+        print(f"Model parameters: {model.get_num_params()/1e6:.1f}M")
+        print(f"Vocabulary size: {tokenizer.get_vocab_size():,}")
     except FileNotFoundError as e:
         print(f"Error: {e}")
         print("Please train the model first or specify correct model path.")
@@ -288,7 +266,7 @@ def main():
         )
     else:
         print(f"\nPrompt: {args.prompt}")
-        print("\nGenerated:", end=" ")
+        print("Generated:", end=" ")
         try:
             generated = generate_single(
                 model, tokenizer, args.prompt,

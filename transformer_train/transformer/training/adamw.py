@@ -7,6 +7,7 @@ class DistAdamW(torch.optim.Optimizer):
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
         super().__init__(param_groups, defaults)
 
+    @torch.compile
     @torch.no_grad()
     def step(self):
         rank = dist.get_rank()

@@ -236,6 +236,7 @@ class Transformer(nn.Module):
         # Grab the rotary embeddings for the current sequence length
         assert T <= self.cos.size(1), f"Sequence length {T} exceeds rotary embeddings cache {self.cos.size(1)}"
         assert idx.device == self.cos.device, f"Rotary embeddings and idx are on different devices"
+        assert self.cos.dtype == torch.bfloat16, "Rotary embeddings must be in bfloat16"
         # If kv cache exists, we need to offset the rotary embeddings to the current position in the cache
         T0 = 0 if kv_cache is None else kv_cache.get_pos()
         cos_sin = self.cos[:, T0:T0+T], self.sin[:, T0:T0+T]  # truncate cache to current sequence length
@@ -256,7 +257,7 @@ class Transformer(nn.Module):
             # Training mode: compute and return the loss
             logits = logits.float()  # use fp32 for logits in training
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction=loss_reduction)
-            return logits, loss
+            return loss
         else:
             # Inference mode: return the logits
             return logits

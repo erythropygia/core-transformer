@@ -4,31 +4,25 @@ MODEL_CONFIG = {
     'n_head': 12,           # 12 attention head (768 ÷ 12 = 64 head_dim)
     'n_kv_head': 12,        # number of key/value heads (GQA: can be less than n_head for efficiency)
     'block_size': 1024,     # 1024 context window
-    'dropout': 0.1,         # Dropout (not used, kept for compatibility)
     'vocab_size': None,     # tokenizer'dan alınacak
-    'use_flash_attention': True,  # Not used (uses PyTorch's scaled_dot_product_attention)
-    'use_gradient_checkpointing': True,  
-    'use_selective_checkpointing': True, 
 }
 
 TRAINING_CONFIG = {
     # Training stage: 'base' (pretraining), 'mid' (mid-training), 'sft' (chat fine-tuning)
-    'training_stage': 'base',  # Config'den hangi stage'in hangi dataset ile olacağını belirleyin
+    'training_stage': 'base',
     
     'batch_size': 1,       
-    'learning_rate': 6e-4,  # Legacy: used if use_muon_optimizer is False
+    'learning_rate': 6e-4,  # Used if use_muon_optimizer is False
     'weight_decay': 0.1,   
     'beta1': 0.9,
     'beta2': 0.95,
     'grad_clip': 1.0,
-    'warmup_epochs': 3,     
-    'max_epochs': 1,       
-    'eval_interval': 2,     
+    'warmup_epochs': 1,     # Warmup for 1 epoch (5B tokens)
+    'max_epochs': 20,       # 20 epochs = 100B tokens total (full dataset sweep)
+    'eval_interval': 1,     # Full evaluation every epoch     
     'save_interval': 5,     
     'accumulation_steps': 16,  
     'use_wandb': True,
-    'compile_model': False,
-    'scheduler_type': 'cosine_with_warmup',
     'eval_generation_samples': 3, 
     'max_eval_batches': 50,
     
@@ -38,42 +32,31 @@ TRAINING_CONFIG = {
     'embedding_lr': 0.2,  # Learning rate for token embeddings
     'matrix_lr': 0.02,  # Learning rate for transformer matrix parameters (Muon) 
     
-    'use_cpu_offload': False,     
-    'use_activation_checkpointing': True,
     'use_mixed_precision': True, 
     'dataloader_num_workers': 2, 
     'pin_memory': True,         
     'prefetch_factor': 2,        
 
     # Token accounting (streaming datasets)
-    # Base pretraining corpus ~100B tokens across ~400 parquet shards.
-    # tokens_per_epoch is used to derive scheduler steps when the dataloader
-    # is streaming and has no length.
-    'tokens_per_epoch': 100_000_000_000,
+    # 1 epoch = 5B tokens (~5000 steps with batch_size=1, accumulation=16, block_size=1024)
+    # This makes epochs more manageable for tracking progress
+    'tokens_per_epoch': 5_000_000_000,  # 5B tokens per epoch
     
     # Progress reporting
-    'log_interval': 50,     
-    'eval_steps': 1000,     
-    'checkpoint_steps': 500,  
+    'log_interval': 50,     # Log every 50 steps
+    'eval_steps': 1000,     # Evaluate + generate samples every 1000 steps
+    'checkpoint_steps': 1000,  # Save checkpoint every 500 steps  
     
-    # Regularization
+    # Early stopping
     'early_stopping_patience': 8,  
     'early_stopping_min_delta': 0.005,
-    'label_smoothing': 0.05,  
-    'mixup_alpha': 0.1,      
-    'use_cosine_restarts': False,
     
     'vocab_size': 32000,
     'max_data_samples': 150000,  
     
-    # DeepSpeed 8GB VRAM Optimization
+    # DeepSpeed Optimization
     'use_deepspeed': False,         
     'deepspeed_config_path': 'transformers_train/deepspeed_config/deepspeed_config.json',
-    'zero_stage': 2,                 # ZeRO Stage 2 
-    'cpu_offload': False,            
-    'nvme_offload': False,           # NVMe offload (SSD gerekli)
-    'allgather_bucket_size': 5e8,    # Memory optimization
-    'reduce_bucket_size': 5e8,       # Memory optimization
 }
 
 TEST_PROMPTS = [
@@ -101,7 +84,8 @@ BASE_DATASET_CONFIG = {
     'data_dir': 'dataset/base_data',  # Directory containing parquet files
     'text_column': 'text',  # Column name in parquet files
     'max_samples': None,  # None = use all
-    'tokens_per_epoch': 80_000_000_000,  # One full sweep over ~400 shards (~100B tokens)
+    'tokens_per_epoch': 5_000_000_000,  # 5B tokens per epoch (manageable size for progress tracking)
+    # Note: Full dataset is ~100B tokens, so ~20 epochs to see all data
 }
 
 # Mid Training Dataset Config (Structured tasks)

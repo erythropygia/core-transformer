@@ -99,7 +99,7 @@ def calculate_perplexity(model, data_loader, device, device_type, max_batches=50
         inputs, targets = inputs.to(device), targets.to(device)
         
         with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
-            _, loss = model.forward(inputs, targets=targets)
+            loss = model(inputs, targets)
         
         batch_tokens = targets.numel()
         total_loss += loss.item() * batch_tokens
@@ -176,14 +176,20 @@ def evaluate_model_comprehensive(model, val_loader, tokenizer, device, device_ty
     max_batches = config.get('max_eval_batches', 50)
     
     model.eval()
-    for batch_idx, (inputs, targets) in enumerate(val_loader):
+    for batch_idx, batch_data in enumerate(val_loader):
         if batch_idx >= max_batches:
             break
+        
+        # Handle both 2-tuple and 3-tuple batch formats (with/without state_dict)
+        if isinstance(batch_data, tuple) and len(batch_data) == 3:
+            inputs, targets, _ = batch_data
+        else:
+            inputs, targets = batch_data
             
         inputs, targets = inputs.to(device), targets.to(device)
         
         with autocast(device_type=device_type, enabled=(device_type == 'cuda')):
-            _, loss = model.forward(inputs, targets=targets)
+            loss = model(inputs, targets)
         
         total_loss += loss.item()
         num_batches += 1
