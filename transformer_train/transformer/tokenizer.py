@@ -136,7 +136,13 @@ class RustBPETokenizer:
         return self.encode(*args, **kwargs)
 
     def decode(self, ids, skip_special_tokens=False):
-        return self.enc.decode(ids)
+        text = self.enc.decode(ids)
+        
+        if skip_special_tokens:
+            for special_token in SPECIAL_TOKENS:
+                text = text.replace(special_token, '')
+        
+        return text
 
     def save(self, tokenizer_dir):
         os.makedirs(tokenizer_dir, exist_ok=True)
