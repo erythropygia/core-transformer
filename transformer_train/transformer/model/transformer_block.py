@@ -149,21 +149,28 @@ class Transformer(nn.Module):
             torch.nn.init.zeros_(block.attn.c_proj.weight)
         
         # Cast embeddings to bfloat16 if on CUDA (saves memory)
+        # NOTE: We keep embeddings in full precision during training for better stability
+        # Only cast to bfloat16 for inference or if explicitly needed
         if torch.cuda.is_available():
-            self.wte = self.wte.to(dtype=torch.bfloat16)
+            # Keep cos/sin in bfloat16 (they're precomputed, no gradients)
             self.cos = self.cos.to(dtype=torch.bfloat16)
             self.sin = self.sin.to(dtype=torch.bfloat16)
+            # Keep embeddings in float32 for training stability (can be cast during forward if needed)
+            # self.wte = self.wte.to(dtype=torch.bfloat16)  # Disabled for training stability
     
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             fan_out = module.weight.size(0)
             fan_in = module.weight.size(1)
-            std = 1.0 / math.sqrt(fan_in) * min(1.0, math.sqrt(fan_out / fan_in))
+            # Use Kaiming uniform initialization (better for ReLU² activation)
+            # Scale by sqrt(2) for ReLU² activation function
+            std = math.sqrt(2.0 / fan_in) * min(1.0, math.sqrt(fan_out / fan_in))
             torch.nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
+            # Use smaller std for embeddings (0.02 instead of 1.0) for better stability
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
     
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
         # Autodetect the device from model embeddings

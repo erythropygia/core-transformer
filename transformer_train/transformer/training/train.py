@@ -1211,34 +1211,110 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
         else:
             new_state_dict[k] = v
     
-    # Load model weights
-    model.load_state_dict(new_state_dict, strict=False)
+    # Load model weights with better error reporting
+    missing_keys, unexpected_keys = model.load_state_dict(new_state_dict, strict=False)
+    if missing_keys:
+        print(f"Warning: Missing keys in checkpoint: {len(missing_keys)} keys")
+        if len(missing_keys) <= 10:
+            for key in missing_keys:
+                print(f"  - {key}")
+        else:
+            print(f"  First 10: {missing_keys[:10]}")
+    if unexpected_keys:
+        print(f"Warning: Unexpected keys in checkpoint: {len(unexpected_keys)} keys")
+        if len(unexpected_keys) <= 10:
+            for key in unexpected_keys:
+                print(f"  - {key}")
+        else:
+            print(f"  First 10: {unexpected_keys[:10]}")
     print("Model weights loaded")
     
     # Load training state
     additional_state_path = checkpoint_path.replace('.safetensors', '_state.pt')
+    additional_state = {}
     if os.path.exists(additional_state_path):
         additional_state = torch.load(additional_state_path, map_location=device, weights_only=True)
         
         if optimizer and 'optimizer' in additional_state:
-            optimizer.load_state_dict(additional_state['optimizer'])
-            print("Optimizer state loaded")
+            try:
+                optimizer.load_state_dict(additional_state['optimizer'])
+                print("Optimizer state loaded")
+            except Exception as e:
+                print(f"Warning: Failed to load optimizer state: {e}")
+                print("Continuing with fresh optimizer state...")
         
         if scheduler and 'scheduler' in additional_state and additional_state['scheduler']:
-            scheduler.load_state_dict(additional_state['scheduler'])
-            print("Scheduler state loaded")
+            try:
+                scheduler.load_state_dict(additional_state['scheduler'])
+                print("Scheduler state loaded")
+                # Verify and fix scheduler step to match global_step
+                expected_step = int(metadata.get('global_step', '0'))
+                # LambdaLR uses 'last_epoch' in its state_dict
+                if 'last_epoch' in additional_state['scheduler']:
+                    saved_step = additional_state['scheduler']['last_epoch']
+                    if saved_step != expected_step:
+                        print(f"Warning: Scheduler step ({saved_step}) != global_step ({expected_step})")
+                        print(f"Manually advancing scheduler from {saved_step} to {expected_step}")
+                        # Manually step scheduler to correct position
+                        for _ in range(saved_step, expected_step):
+                            scheduler.step()
+                        print(f"Scheduler now at step {expected_step}")
+                else:
+                    # For LambdaLR, we need to step manually
+                    print(f"Manually setting scheduler to step {expected_step}")
+                    for _ in range(expected_step):
+                        scheduler.step()
+            except Exception as e:
+                print(f"Warning: Failed to load scheduler state: {e}")
+                print("Continuing with fresh scheduler state...")
+                # Manually set scheduler to correct step even if loading failed
+                expected_step = int(metadata.get('global_step', '0'))
+                print(f"Manually advancing scheduler to step {expected_step}")
+                for _ in range(expected_step):
+                    scheduler.step()
         
         if scaler and 'scaler' in additional_state:
-            scaler.load_state_dict(additional_state['scaler'])
-            print("Scaler state loaded")
+            try:
+                scaler.load_state_dict(additional_state['scaler'])
+                print("Scaler state loaded")
+            except Exception as e:
+                print(f"Warning: Failed to load scaler state: {e}")
+                print("Continuing with fresh scaler state...")
         
         if muon_optimizer and 'muon_optimizer' in additional_state:
-            muon_optimizer.load_state_dict(additional_state['muon_optimizer'])
-            print("Muon optimizer state loaded")
+            try:
+                muon_optimizer.load_state_dict(additional_state['muon_optimizer'])
+                print("Muon optimizer state loaded")
+            except Exception as e:
+                print(f"Warning: Failed to load muon optimizer state: {e}")
+                print("Continuing with fresh muon optimizer state...")
         
         if muon_scheduler and 'muon_scheduler' in additional_state and additional_state['muon_scheduler']:
-            muon_scheduler.load_state_dict(additional_state['muon_scheduler'])
-            print("Muon scheduler state loaded")
+            try:
+                muon_scheduler.load_state_dict(additional_state['muon_scheduler'])
+                print("Muon scheduler state loaded")
+                # Verify and fix muon scheduler step to match global_step
+                expected_step = int(metadata.get('global_step', '0'))
+                if 'last_epoch' in additional_state['muon_scheduler']:
+                    saved_step = additional_state['muon_scheduler']['last_epoch']
+                    if saved_step != expected_step:
+                        print(f"Warning: Muon scheduler step ({saved_step}) != global_step ({expected_step})")
+                        print(f"Manually advancing muon scheduler from {saved_step} to {expected_step}")
+                        for _ in range(saved_step, expected_step):
+                            muon_scheduler.step()
+                        print(f"Muon scheduler now at step {expected_step}")
+                else:
+                    print(f"Manually setting muon scheduler to step {expected_step}")
+                    for _ in range(expected_step):
+                        muon_scheduler.step()
+            except Exception as e:
+                print(f"Warning: Failed to load muon scheduler state: {e}")
+                print("Continuing with fresh muon scheduler state...")
+                # Manually set muon scheduler to correct step even if loading failed
+                expected_step = int(metadata.get('global_step', '0'))
+                print(f"Manually advancing muon scheduler to step {expected_step}")
+                for _ in range(expected_step):
+                    muon_scheduler.step()
     
     # Parse metadata
     resume_info = {

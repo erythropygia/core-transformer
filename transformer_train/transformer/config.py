@@ -28,9 +28,9 @@ TRAINING_CONFIG = {
     
     # Muon optimizer settings
     'use_muon_optimizer': True,  # Use Muon + AdamW with separate learning rates
-    'unembedding_lr': 0.002,  # Learning rate for lm_head (reduced from 0.004)
-    'embedding_lr': 0.05,  # Learning rate for token embeddings (reduced from 0.2 - was too high!)
-    'matrix_lr': 0.01,  # Learning rate for transformer matrix parameters (Muon) (reduced from 0.02) 
+    'unembedding_lr': 0.003,  # Learning rate for lm_head (slightly increased for better learning)
+    'embedding_lr': 0.08,  # Learning rate for token embeddings (balanced for 140M model)
+    'matrix_lr': 0.015,  # Learning rate for transformer matrix parameters (Muon) (balanced for 140M model) 
     
     'use_mixed_precision': True, 
     'dataloader_num_workers': 2, 
@@ -61,7 +61,7 @@ TRAINING_CONFIG = {
     
     # DeepSpeed Optimization
     'use_deepspeed': False,         
-    'deepspeed_config_path': 'transformers_train/deepspeed_config/deepspeed_config.json',
+    'deepspeed_config_path': 'transformer_train/deepspeed_config/deepspeed_config.json',
 }
 
 TEST_PROMPTS = [
