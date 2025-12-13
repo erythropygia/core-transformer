@@ -95,6 +95,18 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
     # Create engine
     engine = Engine(model, tokenizer)
     
+    # Get end-of-sequence tokens
+    bos_token_id = None
+    assistant_end_token_id = None
+    try:
+        bos_token_id = tokenizer.get_bos_token_id()
+    except:
+        pass
+    try:
+        assistant_end_token_id = tokenizer.encode_special("<|assistant_end|>")
+    except:
+        pass
+    
     # Encode prompt (simple, like nanochat)
     prompt_tokens = tokenizer.encode(prompt)
     if isinstance(prompt_tokens, list) and len(prompt_tokens) > 0 and isinstance(prompt_tokens[0], list):
@@ -112,10 +124,16 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
             seed=42
         ):
             token = token_column[0]  # Single sample
+            
+            # Stop early if we hit an end-of-sequence token (don't include it in output)
+            if (bos_token_id is not None and token == bos_token_id) or \
+               (assistant_end_token_id is not None and token == assistant_end_token_id):
+                break
+            
             response_tokens.append(token)
     
-    # Decode only the generated part
-    generated_text = tokenizer.decode(response_tokens)
+    # Decode only the generated part (skip special tokens like <|bos|>)
+    generated_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
     
     return generated_text
 
@@ -187,6 +205,13 @@ def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16",
         print("\nAssistant: ", end="", flush=True)
         response_tokens = []
         
+        # Get BOS token ID for early stopping
+        bos_token_id = None
+        try:
+            bos_token_id = tokenizer.get_bos_token_id()
+        except:
+            pass
+        
         with autocast_ctx:
             for token_column, token_masks in engine.generate(
                 conversation_tokens,
@@ -197,15 +222,18 @@ def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16",
                 seed=42
             ):
                 token = token_column[0]
-                response_tokens.append(token)
                 
-                # Stream output
-                token_text = tokenizer.decode([token])
-                print(token_text, end="", flush=True)
-                
-                # Check for end token
+                # Check for end tokens (stop early, don't include in output)
                 if has_chat_tokens and token == assistant_end:
                     break
+                if bos_token_id is not None and token == bos_token_id:
+                    break
+                
+                response_tokens.append(token)
+                
+                # Stream output (skip special tokens like <|bos|>)
+                token_text = tokenizer.decode([token], skip_special_tokens=True)
+                print(token_text, end="", flush=True)
         
         print()  # New line
         
