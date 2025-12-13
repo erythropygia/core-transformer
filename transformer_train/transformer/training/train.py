@@ -376,7 +376,9 @@ def train(
                 unembedding_lr=TRAINING_CONFIG.get('unembedding_lr', 0.004),
                 embedding_lr=TRAINING_CONFIG.get('embedding_lr', 0.2),
                 matrix_lr=TRAINING_CONFIG.get('matrix_lr', 0.02),
-                weight_decay=TRAINING_CONFIG.get('weight_decay', 0.0)
+                weight_decay=TRAINING_CONFIG.get('weight_decay', 0.0),
+                beta1=TRAINING_CONFIG.get('beta1', 0.9),
+                beta2=TRAINING_CONFIG.get('beta2', 0.95)
             )
             # For compatibility, we'll use the first optimizer (AdamW) for scheduler
             # In practice, you might want separate schedulers for each optimizer
@@ -405,6 +407,13 @@ def train(
         scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
         print(f"Scheduler: Cosine with warmup ({warmup_steps:,} warmup steps)")
         
+        # Create scheduler for Muon optimizer if using Muon
+        muon_scheduler = None
+        if use_muon and muon_optimizer is not None:
+            # Create a separate scheduler for Muon optimizer with same schedule
+            muon_scheduler = get_cosine_schedule_with_warmup(muon_optimizer, warmup_steps, total_steps)
+            print(f"Muon scheduler: Cosine with warmup ({warmup_steps:,} warmup steps)")
+        
         # Muon momentum scheduler function
         def get_muon_momentum(step):
             frac = min(step / 300, 1)
@@ -428,7 +437,8 @@ def train(
                 
                 resume_info = load_checkpoint(
                     resume_from_checkpoint, model, optimizer, scheduler, scaler, device,
-                    muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None
+                    muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None,
+                    muon_scheduler=muon_scheduler if 'muon_scheduler' in locals() else None
                 )
                 loaded_epoch = resume_info['epoch']
                 global_step = resume_info['global_step']
@@ -647,6 +657,8 @@ def train(
                                 muon_optimizer.step()
                         
                         scheduler.step()
+                        if muon_scheduler is not None:
+                            muon_scheduler.step()
                         optimizer.zero_grad()
                         if muon_optimizer is not None:
                             muon_optimizer.zero_grad()
@@ -754,6 +766,7 @@ def train(
                             model, optimizer, scheduler, scaler, epoch, global_step,
                             best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
                             checkpoint_path=checkpoint_path, muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None,
+                            muon_scheduler=muon_scheduler if 'muon_scheduler' in locals() else None,
                             dataloader_state_dict=dataloader_state_dict if use_parquet_streaming else None
                         )
                     
@@ -855,6 +868,8 @@ def train(
                                 muon_optimizer.step()
                         
                         scheduler.step()
+                        if muon_scheduler is not None:
+                            muon_scheduler.step()
                         optimizer.zero_grad()
                         if muon_optimizer is not None:
                             muon_optimizer.zero_grad()
@@ -950,6 +965,7 @@ def train(
                         model, optimizer, scheduler, scaler, epoch, global_step,
                         best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
                         checkpoint_path=checkpoint_path, muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None,
+                        muon_scheduler=muon_scheduler if 'muon_scheduler' in locals() else None,
                         dataloader_state_dict=None  # Regular dataloader doesn't need state
                     )
             
@@ -1018,6 +1034,7 @@ def train(
                     best_val_loss, perplexity, MODEL_CONFIG, tokenizer_path,
                     checkpoint_path="checkpoints/best_model_120m_8gb.safetensors",
                     muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None,
+                    muon_scheduler=muon_scheduler if 'muon_scheduler' in locals() else None,
                     dataloader_state_dict=dataloader_state_dict if use_parquet_streaming and 'dataloader_state_dict' in locals() else None
                 )
                 print(f"New best model saved! Val loss: {val_loss:.4f}")
@@ -1035,6 +1052,7 @@ def train(
                 model, optimizer, scheduler, scaler, epoch, global_step,
                 best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
                 checkpoint_path=checkpoint_path, muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None,
+                muon_scheduler=muon_scheduler if 'muon_scheduler' in locals() else None,
                 dataloader_state_dict=dataloader_state_dict if use_parquet_streaming and 'dataloader_state_dict' in locals() else None
             )
     
@@ -1067,7 +1085,7 @@ def train(
 
 def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step, 
                    best_val_loss, best_perplexity, config, tokenizer_path, 
-                   checkpoint_path="checkpoint.safetensors", muon_optimizer=None, dataloader_state_dict=None):
+                   checkpoint_path="checkpoint.safetensors", muon_optimizer=None, muon_scheduler=None, dataloader_state_dict=None):
     
     if not checkpoint_path.endswith('.safetensors'):
         checkpoint_path = checkpoint_path.replace('.pt', '.safetensors')
@@ -1153,6 +1171,9 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
             if muon_optimizer is not None:
                 additional_state['muon_optimizer'] = muon_optimizer.state_dict()
             
+            if muon_scheduler is not None:
+                additional_state['muon_scheduler'] = muon_scheduler.state_dict()
+            
             if dataloader_state_dict is not None:
                 additional_state['dataloader_state_dict'] = dataloader_state_dict
             
@@ -1163,7 +1184,7 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
     cleanup_memory()
     return checkpoint_path
 
-def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scaler=None, device=None, muon_optimizer=None):
+def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scaler=None, device=None, muon_optimizer=None, muon_scheduler=None):
     
     print(f"Loading checkpoint: {checkpoint_path}")
     
@@ -1214,6 +1235,10 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
         if muon_optimizer and 'muon_optimizer' in additional_state:
             muon_optimizer.load_state_dict(additional_state['muon_optimizer'])
             print("Muon optimizer state loaded")
+        
+        if muon_scheduler and 'muon_scheduler' in additional_state and additional_state['muon_scheduler']:
+            muon_scheduler.load_state_dict(additional_state['muon_scheduler'])
+            print("Muon scheduler state loaded")
     
     # Parse metadata
     resume_info = {

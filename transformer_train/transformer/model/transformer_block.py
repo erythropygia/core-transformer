@@ -184,7 +184,7 @@ class Transformer(nn.Module):
     def get_device(self):
         return self.wte.weight.device
     
-    def setup_optimizers(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0):
+    def setup_optimizers(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, beta1=0.9, beta2=0.95):
         model_dim = self.config['n_embd']
         ddp, rank, local_rank, world_size = get_dist_info()
         
@@ -204,7 +204,7 @@ class Transformer(nn.Module):
             dict(params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale),
             dict(params=embedding_params, lr=embedding_lr * dmodel_lr_scale),
         ]
-        adamw_kwargs = dict(betas=(0.8, 0.95), eps=1e-10, weight_decay=weight_decay)
+        adamw_kwargs = dict(betas=(beta1, beta2), eps=1e-10, weight_decay=weight_decay)
         
         # Use DistAdamW if DDP is enabled, otherwise use standard AdamW
         if ddp:

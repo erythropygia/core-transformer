@@ -17,7 +17,7 @@ TRAINING_CONFIG = {
     'beta1': 0.9,
     'beta2': 0.95,
     'grad_clip': 1.0,
-    'warmup_epochs': 1,     # Warmup for 1 epoch (5B tokens)
+    'warmup_epochs': 0.05,  # Warmup for 0.05 epoch (~3,800 steps) - appropriate for 140M model
     'max_epochs': 20,       # 20 epochs = 100B tokens total (full dataset sweep)
     'eval_interval': 1,     # Full evaluation every epoch     
     'save_interval': 5,     
@@ -28,9 +28,9 @@ TRAINING_CONFIG = {
     
     # Muon optimizer settings
     'use_muon_optimizer': True,  # Use Muon + AdamW with separate learning rates
-    'unembedding_lr': 0.004,  # Learning rate for lm_head
-    'embedding_lr': 0.2,  # Learning rate for token embeddings
-    'matrix_lr': 0.02,  # Learning rate for transformer matrix parameters (Muon) 
+    'unembedding_lr': 0.002,  # Learning rate for lm_head (reduced from 0.004)
+    'embedding_lr': 0.05,  # Learning rate for token embeddings (reduced from 0.2 - was too high!)
+    'matrix_lr': 0.01,  # Learning rate for transformer matrix parameters (Muon) (reduced from 0.02) 
     
     'use_mixed_precision': True, 
     'dataloader_num_workers': 2, 
