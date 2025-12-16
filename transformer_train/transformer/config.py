@@ -1,8 +1,8 @@
 MODEL_CONFIG = {
-    'n_embd': 768,          # 768 embedding dimension
-    'n_layer': 14,          # 14 transformer layer (~120M parameters)
-    'n_head': 12,           # 12 attention head (768 ÷ 12 = 64 head_dim)
-    'n_kv_head': 12,        # number of key/value heads (GQA: can be less than n_head for efficiency)
+    'n_embd': 896,          # 768 embedding dimension
+    'n_layer': 18,          # 14 transformer layer (~120M parameters)
+    'n_head': 14,           # 12 attention head (768 ÷ 12 = 64 head_dim)
+    'n_kv_head': 7,        # number of key/value heads (GQA: can be less than n_head for efficiency)
     'block_size': 1024,     # 1024 context window
     'vocab_size': None,     # tokenizer'dan alınacak
 }
@@ -11,26 +11,26 @@ TRAINING_CONFIG = {
     # Training stage: 'base' (pretraining), 'mid' (mid-training), 'sft' (chat fine-tuning)
     'training_stage': 'base',
     
-    'batch_size': 4,       
+    'batch_size': 2,       
     'learning_rate': 6e-4,  # Used if use_muon_optimizer is False
-    'weight_decay': 0.1,   
+    'weight_decay': 0.08,   
     'beta1': 0.9,
     'beta2': 0.95,
-    'grad_clip': 1.0,
-    'warmup_epochs': 0.05,  # Warmup for 0.05 epoch (~3,800 steps) - appropriate for 140M model
+    'grad_clip': 0.6,
+    'warmup_epochs': 0.2,  # Warmup for 0.05 epoch (~3,800 steps) - appropriate for 140M model
     'max_epochs': 20,       # 20 epochs = 100B tokens total (full dataset sweep)
     'eval_interval': 1,     # Full evaluation every epoch     
     'save_interval': 5,     
-    'accumulation_steps': 16,  
+    'accumulation_steps': 32,  
     'use_wandb': True,
     'eval_generation_samples': 3, 
-    'max_eval_batches': 50,
+    'max_eval_batches': 25,
     
     # Muon optimizer settings
     'use_muon_optimizer': True,  # Use Muon + AdamW with separate learning rates
-    'unembedding_lr': 0.003,  # Learning rate for lm_head (slightly increased for better learning)
-    'embedding_lr': 0.08,  # Learning rate for token embeddings (balanced for 140M model)
-    'matrix_lr': 0.015,  # Learning rate for transformer matrix parameters (Muon) (balanced for 140M model) 
+    'unembedding_lr': 0.002,  # Learning rate for lm_head (slightly increased for better learning)
+    'embedding_lr': 0.03,  # Learning rate for token embeddings (balanced for 140M model)
+    'matrix_lr': 0.010,  # Learning rate for transformer matrix parameters (Muon) (balanced for 140M model) 
     
     'use_mixed_precision': True, 
     'dataloader_num_workers': 2, 
@@ -40,12 +40,12 @@ TRAINING_CONFIG = {
     # Token accounting (streaming datasets)
     # 1 epoch = 5B tokens (~5000 steps with batch_size=1, accumulation=16, block_size=1024)
     # This makes epochs more manageable for tracking progress
-    'tokens_per_epoch': 5_000_000_000,  # 5B tokens per epoch
+    'tokens_per_epoch': 2_500_000_000,  # 5B tokens per epoch
     
     # Progress reporting
     'log_interval': 50,     # Log every 50 steps
-    'eval_steps': 1000,     # Evaluate + generate samples every 1000 steps
-    'checkpoint_steps': 1000,  # Save checkpoint every 500 steps  
+    'eval_steps': 2000,     # Evaluate + generate samples every 1000 steps
+    'checkpoint_steps': 2000,  # Save checkpoint every 500 steps  
     
     # Data shuffling for better training
     'shuffle_parquet_files': True,  # Shuffle parquet file order each epoch
@@ -54,7 +54,7 @@ TRAINING_CONFIG = {
     
     # Early stopping
     'early_stopping_patience': 8,  
-    'early_stopping_min_delta': 0.005,
+    'early_stopping_min_delta': 0.001,
     
     'vocab_size': 32000,
     'max_data_samples': 150000,  
