@@ -11,7 +11,7 @@ TRAINING_CONFIG = {
     # Training stage: 'base' (pretraining), 'mid' (mid-training), 'sft' (chat fine-tuning)
     'training_stage': 'base',
     
-    'batch_size': 2,       
+    'batch_size': 8,       
     'learning_rate': 6e-4,  # Used if use_muon_optimizer is False
     'weight_decay': 0.08,   
     'beta1': 0.9,
@@ -21,7 +21,7 @@ TRAINING_CONFIG = {
     'max_epochs': 20,       # 20 epochs = 100B tokens total (full dataset sweep)
     'eval_interval': 1,     # Full evaluation every epoch     
     'save_interval': 5,     
-    'accumulation_steps': 32,  
+    'accumulation_steps': 8,  
     'use_wandb': True,
     'eval_generation_samples': 3, 
     'max_eval_batches': 25,
