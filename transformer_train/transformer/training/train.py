@@ -555,6 +555,7 @@ def train(
             batch_counter = 0
             iteration = 0
             current_parquet_info = ""
+            epoch_start_step = global_step  # Track where this epoch started
             for batch_idx in range(max_iterations):
                 try:
                     batch_data = next(train_loader)
@@ -613,6 +614,7 @@ def train(
                         'loss': f"{batch_loss:.4f}",
                         'lr': f"{current_lr:.2e}",
                         'mem': get_memory_usage_safe(),
+                        'epoch': epoch + 1,  # Show current epoch
                         'step': global_step,
                         'iter': iteration
                     }
@@ -666,12 +668,23 @@ def train(
                     # Increment global_step for actual training steps
                     global_step += 1
                     
+                    # Update epoch based on global_step for streaming mode
+                    current_epoch = global_step // steps_per_epoch if steps_per_epoch > 0 else epoch
+                    if current_epoch != epoch:
+                        # Epoch boundary crossed
+                        print(f"\n{'='*80}")
+                        print(f"EPOCH COMPLETED: Moving from Epoch {epoch + 1} to Epoch {current_epoch + 1}")
+                        print(f"{'='*80}")
+                        epoch = current_epoch
+                        progress_bar.set_description(f"Training Epoch {epoch + 1}")
+                    
                     if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb:
                         log_dict = {
                             'train_loss_step': batch_loss,
                             'learning_rate': current_lr,
                             'global_step': global_step,
-                            'iteration': iteration
+                            'iteration': iteration,
+                            'epoch': epoch + 1  # Add epoch to streaming logs
                         }
                         if dataloader_state_dict is not None:
                             log_dict['parquet_index'] = dataloader_state_dict.get('pq_idx', 0)
@@ -751,7 +764,8 @@ def train(
                                 'quick_val_loss': avg_quick_val_loss,
                                 'quick_perplexity': quick_perplexity,
                                 'train_loss_avg': total_train_loss/num_train_batches,
-                                'global_step': global_step
+                                'global_step': global_step,
+                                'epoch': epoch + 1  # Add epoch to quick eval logs
                             })
                         
                         model.train()
@@ -761,13 +775,18 @@ def train(
                         checkpoint_path = f"checkpoints/checkpoint_step_{global_step}.safetensors"
                         if dataloader_state_dict is not None:
                             pq_idx = dataloader_state_dict.get('pq_idx', 0)
-                            print(f"\nCheckpoint: Step {global_step} | Parquet {pq_idx+1}/{total_parquets} | Progress: {(pq_idx/total_parquets)*100:.1f}%")
+                            print(f"\nCheckpoint: Step {global_step} | Epoch {epoch + 1} | Parquet {pq_idx+1}/{total_parquets} | Progress: {(pq_idx/total_parquets)*100:.1f}%")
+                            # Update dataloader state dict with current epoch
+                            dataloader_state_dict_with_epoch = dataloader_state_dict.copy()
+                            dataloader_state_dict_with_epoch['epoch'] = epoch
+                        else:
+                            dataloader_state_dict_with_epoch = None
                         save_checkpoint(
                             model, optimizer, scheduler, scaler, epoch, global_step,
                             best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
                             checkpoint_path=checkpoint_path, muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None,
                             muon_scheduler=muon_scheduler if 'muon_scheduler' in locals() else None,
-                            dataloader_state_dict=dataloader_state_dict if use_parquet_streaming else None
+                            dataloader_state_dict=dataloader_state_dict_with_epoch if use_parquet_streaming else None
                         )
                     
                     if global_step % 50 == 0:
@@ -825,6 +844,7 @@ def train(
                     'loss': f"{batch_loss:.4f}",
                     'lr': f"{current_lr:.2e}",
                     'mem': get_memory_usage_safe(),
+                    'epoch': epoch + 1,  # Show current epoch
                     'step': global_step,
                     'processed': batch_counter
                 })
@@ -874,16 +894,16 @@ def train(
                         if muon_optimizer is not None:
                             muon_optimizer.zero_grad()
                 
-                # Increment global_step for actual training steps
-                global_step += 1
-                
-                if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb:
-                    wandb.log({
-                        'train_loss_step': batch_loss,
-                        'learning_rate': current_lr,
-                        'global_step': global_step,
-                        'epoch': epoch + 1
-                    })
+                    # Increment global_step for actual training steps
+                    global_step += 1
+                    
+                    if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb:
+                        wandb.log({
+                            'train_loss_step': batch_loss,
+                            'learning_rate': current_lr,
+                            'global_step': global_step,
+                            'epoch': epoch + 1
+                        })
                 
                 if global_step % TRAINING_CONFIG['eval_steps'] == 0 and global_step > 0:
                     print(f"\nQuick eval at step {global_step}")
@@ -953,7 +973,8 @@ def train(
                             'quick_val_loss': avg_quick_val_loss,
                             'quick_perplexity': quick_perplexity,
                             'train_loss_avg': total_train_loss/num_train_batches,
-                            'global_step': global_step
+                            'global_step': global_step,
+                            'epoch': epoch + 1  # Add epoch to quick eval logs
                         })
                     
                     model.train()
@@ -1029,13 +1050,18 @@ def train(
             
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                # Update dataloader state dict with current epoch for best model checkpoint
+                best_model_dl_state = None
+                if use_parquet_streaming and 'dataloader_state_dict' in locals() and dataloader_state_dict is not None:
+                    best_model_dl_state = dataloader_state_dict.copy()
+                    best_model_dl_state['epoch'] = epoch
                 save_checkpoint(
                     model, optimizer, scheduler, scaler, epoch, global_step,
                     best_val_loss, perplexity, MODEL_CONFIG, tokenizer_path,
                     checkpoint_path="checkpoints/best_model_120m_8gb.safetensors",
                     muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None,
                     muon_scheduler=muon_scheduler if 'muon_scheduler' in locals() else None,
-                    dataloader_state_dict=dataloader_state_dict if use_parquet_streaming and 'dataloader_state_dict' in locals() else None
+                    dataloader_state_dict=best_model_dl_state
                 )
                 print(f"New best model saved! Val loss: {val_loss:.4f}")
             
@@ -1048,12 +1074,17 @@ def train(
         
         if (epoch + 1) % TRAINING_CONFIG['save_interval'] == 0:
             checkpoint_path = f"checkpoints/checkpoint_epoch_{epoch + 1}.safetensors"
+            # Update dataloader state dict with current epoch for periodic checkpoint
+            periodic_dl_state = None
+            if use_parquet_streaming and 'dataloader_state_dict' in locals() and dataloader_state_dict is not None:
+                periodic_dl_state = dataloader_state_dict.copy()
+                periodic_dl_state['epoch'] = epoch
             save_checkpoint(
                 model, optimizer, scheduler, scaler, epoch, global_step,
                 best_val_loss, float('inf'), MODEL_CONFIG, tokenizer_path,
                 checkpoint_path=checkpoint_path, muon_optimizer=muon_optimizer if 'muon_optimizer' in locals() else None,
                 muon_scheduler=muon_scheduler if 'muon_scheduler' in locals() else None,
-                dataloader_state_dict=dataloader_state_dict if use_parquet_streaming and 'dataloader_state_dict' in locals() else None
+                dataloader_state_dict=periodic_dl_state
             )
     
     if use_wandb:
@@ -1115,7 +1146,9 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
         if dataloader_state_dict is not None:
             metadata['parquet_index'] = str(dataloader_state_dict.get('pq_idx', 0))
             metadata['row_group_index'] = str(dataloader_state_dict.get('rg_idx', 0))
-            metadata['epoch'] = str(dataloader_state_dict.get('epoch', 0))
+            # Update epoch in metadata from dataloader state (more accurate for streaming)
+            if 'epoch' in dataloader_state_dict:
+                metadata['epoch'] = str(dataloader_state_dict['epoch'])
         
         metadata_path = checkpoint_path.replace('.safetensors', '_metadata.json')
         with open(metadata_path, 'w') as f:
@@ -1153,7 +1186,9 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
         if dataloader_state_dict is not None:
             metadata['parquet_index'] = str(dataloader_state_dict.get('pq_idx', 0))
             metadata['row_group_index'] = str(dataloader_state_dict.get('rg_idx', 0))
-            metadata['epoch'] = str(dataloader_state_dict.get('epoch', 0))
+            # Update epoch in metadata from dataloader state (more accurate for streaming)
+            if 'epoch' in dataloader_state_dict:
+                metadata['epoch'] = str(dataloader_state_dict['epoch'])
         
         # Save to SafeTensors
         save_file(model_state, checkpoint_path, metadata=metadata)
@@ -1317,14 +1352,22 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
                     muon_scheduler.step()
     
     # Parse metadata
+    dataloader_state = additional_state.get('dataloader_state_dict', None) if os.path.exists(additional_state_path) else None
+    
+    # Prioritize epoch from dataloader_state_dict (most accurate for streaming mode)
+    saved_epoch = int(metadata.get('epoch', '0'))
+    if dataloader_state is not None and 'epoch' in dataloader_state:
+        saved_epoch = dataloader_state['epoch']
+        print(f"Using epoch from dataloader state: {saved_epoch}")
+    
     resume_info = {
-        'epoch': int(metadata.get('epoch', '0')),
+        'epoch': saved_epoch,
         'global_step': int(metadata.get('global_step', '0')),
         'best_val_loss': float(metadata.get('best_val_loss', 'inf')),
         'best_perplexity': float(metadata.get('best_perplexity', 'inf')),
         'config': json.loads(metadata.get('config', '{}')),
         'tokenizer_path': metadata.get('tokenizer_path', ''),
-        'dataloader_state_dict': additional_state.get('dataloader_state_dict', None) if os.path.exists(additional_state_path) else None,
+        'dataloader_state_dict': dataloader_state,
     }
     
     print(f"Resume from: Epoch {resume_info['epoch']}, Step {resume_info['global_step']}")
