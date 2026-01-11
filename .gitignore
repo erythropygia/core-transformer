@@ -4,10 +4,8 @@ wandb/
 *.pyc
 __pycache__/
 
-report
 rustbpe/target
 tokenizer
 dataset/base_data
-dataset/base_data_old
 dataset/mid_data
 dataset/sft_data
