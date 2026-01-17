@@ -68,7 +68,7 @@ class RustBPETokenizer:
             mergeable_ranks=mergeable_ranks,  # dict[bytes, int] (token bytes -> merge priority rank)
             special_tokens=special_tokens,  # dict[str, int] (special token name -> token id)
         )
-        return cls(enc, "<|bos|>")
+        return cls(enc, "<|bos|>", "<|eos|>")
 
     @classmethod
     def from_directory(cls, tokenizer_dir):
@@ -79,7 +79,7 @@ class RustBPETokenizer:
             raise FileNotFoundError(f"Tokenizer file not found: {pickle_path}")
         with open(pickle_path, "rb") as f:
             enc = pickle.load(f)
-        return cls(enc, "<|bos|>")
+        return cls(enc, "<|bos|>", "<|eos|>")
 
     @classmethod
     def from_pretrained(cls, tiktoken_name):
@@ -88,7 +88,8 @@ class RustBPETokenizer:
         # https://github.com/openai/tiktoken/blob/eedc8563/tiktoken_ext/openai_public.py
         enc = tiktoken.get_encoding(tiktoken_name)
         # tiktoken calls the special document delimiter token "<|endoftext|>"
-        return cls(enc, "<|endoftext|>")
+        # For GPT models, endoftext is used as both BOS and EOS
+        return cls(enc, "<|endoftext|>", "<|endoftext|>")
 
     def get_vocab_size(self):
         return self.enc.n_vocab
