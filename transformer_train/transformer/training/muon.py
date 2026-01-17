@@ -2,21 +2,37 @@ import torch
 from torch import Tensor
 import torch.distributed as dist
 
+# Coefficients for Polar Express (computed for num_iters=5, safety_factor=2e-2, cushion=2)
+# From https://arxiv.org/pdf/2505.16932
+# Paper: "Polar Express Sign Method" by Noah Amsel, David Persson, Christopher Musco, Robert M. Gower
+# This provides better convergence properties than standard Newton-Schulz iteration
+polar_express_coeffs = [
+    (8.156554524902461, -22.48329292557795, 15.878769915207462),
+    (4.042929935166739, -2.808917465908714, 0.5000178451051316),
+    (3.8916678022926607, -2.772484153217685, 0.5060648178503393),
+    (3.285753657755655, -2.3681294933425376, 0.46449024233003106),
+    (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
+]
+
 try:
     @torch.compile
-    def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
+    def zeropower_via_polar_express(G: Tensor, steps: int) -> Tensor:
+        """
+        Polar Express orthogonalization - better convergence than Newton-Schulz.
+        Uses optimized coefficients for each iteration step.
+        """
         assert G.ndim >= 2  # batched Muon implementation
-        a, b, c = (3.4445, -4.7750, 2.0315)
         X = G.bfloat16()
         if G.size(-2) > G.size(-1):
             X = X.mT
 
         # Ensure spectral norm is at most 1
-        X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
-        # Perform the NS iterations
-        for _ in range(steps):
+        X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.02 + 1e-6)
+        
+        # Perform the Polar Express iterations with optimized coefficients
+        for a, b, c in polar_express_coeffs[:steps]:
             A = X @ X.mT
-            B = b * A + c * A @ A  # quintic computation strategy
+            B = b * A + c * (A @ A)
             X = a * X + B @ X
 
         if G.size(-2) > G.size(-1):
@@ -24,16 +40,15 @@ try:
         return X
 except:
     # Fallback if torch.compile is not available
-    def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
+    def zeropower_via_polar_express(G: Tensor, steps: int) -> Tensor:
         assert G.ndim >= 2
-        a, b, c = (3.4445, -4.7750, 2.0315)
         X = G.bfloat16()
         if G.size(-2) > G.size(-1):
             X = X.mT
-        X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
-        for _ in range(steps):
+        X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.02 + 1e-6)
+        for a, b, c in polar_express_coeffs[:steps]:
             A = X @ X.mT
-            B = b * A + c * A @ A
+            B = b * A + c * (A @ A)
             X = a * X + B @ X
         if G.size(-2) > G.size(-1):
             X = X.mT
@@ -63,7 +78,7 @@ class Muon(torch.optim.Optimizer):
                 buf: Tensor = state["momentum_buffer"]
                 buf.lerp_(g, 1 - group["momentum"])
                 g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-                g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"])
+                g = zeropower_via_polar_express(g, steps=group["ns_steps"])
                 p.add_(g, alpha=-group["lr"] * max(1, p.size(-2) / p.size(-1))**0.5)
 
 
@@ -137,7 +152,7 @@ class DistMuon(torch.optim.Optimizer):
                     buf: Tensor = state["momentum_buffer"]
                     buf.lerp_(g, 1.0 - group["momentum"])
                     g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-                    g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"])
+                    g = zeropower_via_polar_express(g, steps=group["ns_steps"])
                     scale = (max(1.0, p.size(-2) / p.size(-1)) ** 0.5)
                     p.add_(g, alpha=-group["lr"] * scale)
                 # Replicate updated parameters to all ranks

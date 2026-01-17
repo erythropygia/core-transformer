@@ -184,14 +184,18 @@ def tokenizing_distributed_data_loader_bos_bestfit(
     buffer_size: int = 1000
 ):
     """
-    BOS-aligned bestfit packing dataloader.
+    BOS-aligned dataloader with Best-Fit Cropping (matching nanochat implementation).
     
-    Key features:
-    - Every row starts with BOS token
-    - Document packing to maximize token utilization
-    - ~100% utilization with acceptable cropping loss
+    Algorithm for each row:
+    1. From buffered docs, pick the LARGEST doc that fits entirely
+    2. Repeat until no doc fits
+    3. When nothing fits, crop the SHORTEST doc to fill remaining space exactly
     
-    This is the advanced version inspired by nanochat's bos_bestfit implementation.
+    Key properties:
+    - Every row starts with BOS
+    - 100% utilization (no padding, every token is trained on)
+    - Approximately 35% of all tokens are discarded due to cropping
+    - Minimizes waste by cropping shortest document when nothing fits
     """
     assert split in ["train", "val"], "split must be 'train' or 'val'"
     
@@ -227,7 +231,8 @@ def tokenizing_distributed_data_loader_bos_bestfit(
         if shuffle_seed is not None:
             random.seed(shuffle_seed)
         random.shuffle(parquet_paths)
-        print(f"BOS Bestfit: Shuffled {len(parquet_paths)} parquet files")
+        if ddp_rank == 0:
+            print(f"BOS Bestfit: Shuffled {len(parquet_paths)} parquet files")
     
     # Document iterator
     def document_iterator():
@@ -291,75 +296,59 @@ def tokenizing_distributed_data_loader_bos_bestfit(
     
     docs = document_iterator()
     
-    # BOS-aligned bestfit packing
-    row_size = T + 1  # +1 for target
-    document_buffer = []
+    # BOS-aligned bestfit packing (matching nanochat algorithm EXACTLY)
+    row_capacity = T + 1  # +1 for target
+    doc_buffer = []
+    pq_idx, rg_idx, epoch = 0, 0, 0
+    
+    def refill_buffer():
+        nonlocal pq_idx, rg_idx, epoch
+        doc_tokens, (pq_idx, rg_idx, epoch) = next(docs)
+        doc_buffer.append(doc_tokens)
     
     while True:
-        # Fill buffer with documents
-        while len(document_buffer) < buffer_size:
-            doc_tokens, state = next(docs)
-            document_buffer.append((doc_tokens, state))
-        
-        # Pack documents into rows (bestfit)
         rows = []
-        current_row = []
-        current_row_len = 0
-        last_state = None
-        
-        i = 0
-        while i < len(document_buffer) and len(rows) < B:
-            doc_tokens, state = document_buffer[i]
-            doc_len = len(doc_tokens)
-            last_state = state
-            
-            # Can this document fit in current row?
-            if current_row_len + doc_len <= row_size:
-                current_row.extend(doc_tokens)
-                current_row_len += doc_len
-                i += 1
-            else:
-                # Current row is full, finalize it
-                if current_row_len > 0:
-                    # Pad if needed
-                    if current_row_len < row_size:
-                        # Pad with zeros (or use a pad token)
-                        current_row.extend([0] * (row_size - current_row_len))
-                    rows.append(current_row[:row_size])
-                    current_row = []
-                    current_row_len = 0
+        for _ in range(B):
+            row = []
+            while len(row) < row_capacity:
+                # Ensure buffer has documents
+                while len(doc_buffer) < buffer_size:
+                    refill_buffer()
                 
-                # If document is too large, crop it and start new row
-                if doc_len > row_size:
-                    rows.append(doc_tokens[:row_size])
-                    # Discard the rest (acceptable cropping loss)
-                    i += 1
+                remaining = row_capacity - len(row)
+                
+                # Find LARGEST doc that fits entirely (nanochat's algorithm)
+                best_idx = -1
+                best_len = 0
+                for i, doc in enumerate(doc_buffer):
+                    doc_len = len(doc)
+                    if doc_len <= remaining and doc_len > best_len:
+                        best_idx = i
+                        best_len = doc_len
+                
+                if best_idx >= 0:
+                    # Found a doc that fits - use it
+                    doc = doc_buffer.pop(best_idx)
+                    row.extend(doc)
                 else:
-                    # Start new row with this document
-                    current_row = doc_tokens.copy()
-                    current_row_len = doc_len
-                    i += 1
-        
-        # Finalize last row if needed
-        if current_row_len > 0 and len(rows) < B:
-            if current_row_len < row_size:
-                current_row.extend([0] * (row_size - current_row_len))
-            rows.append(current_row[:row_size])
-        
-        # Remove used documents from buffer
-        document_buffer = document_buffer[i:]
-        
-        # Convert rows to tensors
-        if len(rows) == B:
-            use_cuda_optimizations = device == "cuda"
-            scratch = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda_optimizations)
+                    # No doc fits - crop SHORTEST doc to fill remaining (minimize waste)
+                    shortest_idx = min(range(len(doc_buffer)), key=lambda i: len(doc_buffer[i]))
+                    doc = doc_buffer.pop(shortest_idx)
+                    row.extend(doc[:remaining])
+                    # Remaining part of doc is discarded (cropping loss)
             
-            # Create inputs/targets
-            inputs = scratch[:, :-1].to(device=device, non_blocking=use_cuda_optimizations)
-            targets = scratch[:, 1:].to(device=device, non_blocking=use_cuda_optimizations)
-            
-            # State dict
-            state_dict = last_state[1] if last_state else {"pq_idx": 0, "rg_idx": 0, "epoch": 0}
-            
-            yield inputs, targets, state_dict
+            rows.append(row[:row_capacity])
+        
+        # Convert to tensors
+        use_cuda_optimizations = device == "cuda"
+        batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda_optimizations)
+        
+        # Create inputs/targets
+        inputs = batch_tensor[:, :-1].to(device=device, non_blocking=use_cuda_optimizations)
+        targets = batch_tensor[:, 1:].to(device=device, non_blocking=use_cuda_optimizations)
+        
+        # State dict
+        state_dict = {"pq_idx": pq_idx, "rg_idx": rg_idx, "epoch": epoch}
+        
+        yield inputs, targets, state_dict
 
