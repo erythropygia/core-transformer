@@ -333,6 +333,14 @@ class Transformer(nn.Module):
     def generate(self, idx, max_new_tokens=100, temperature=1.0, top_k=None, top_p=0.9, kv_cache=None):
         self.eval()
         
+        # Get EOS token ID if tokenizer is available
+        eos_token_id = None
+        if self.tokenizer is not None:
+            try:
+                eos_token_id = self.tokenizer.get_eos_token_id()
+            except:
+                pass
+        
         for _ in range(max_new_tokens):
             # Crop context if needed
             idx_cond = idx if idx.size(1) <= self.config.get('block_size', 1024) else idx[:, -self.config.get('block_size', 1024):]
@@ -362,6 +370,10 @@ class Transformer(nn.Module):
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
             idx = torch.cat((idx, idx_next), dim=1)
+            
+            # Stop if EOS token is generated
+            if eos_token_id is not None and idx_next.item() == eos_token_id:
+                break
         
         return idx
     

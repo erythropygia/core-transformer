@@ -1,6 +1,7 @@
 import os
 import math
 import torch
+import torch.nn.functional as F
 from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 import json
@@ -577,6 +578,7 @@ def train(
                     loss.backward()
                 
                 batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
+                batch_bpb = batch_loss / math.log(2)  # Convert nats to bits
                 
                 total_train_loss += batch_loss
                 num_train_batches += 1
@@ -689,19 +691,34 @@ def train(
                                 if val_batch_idx >= 10:  # Quick eval
                                     break
                                 
+                                # Handle both regular datasets and SFT datasets (with loss masking)
                                 if isinstance(val_batch_data, tuple) and len(val_batch_data) == 3:
-                                    val_inputs, val_targets, _ = val_batch_data
+                                    val_inputs, val_targets, val_loss_mask = val_batch_data
+                                    val_inputs = val_inputs.to(device)
+                                    val_targets = val_targets.to(device)
+                                    val_loss_mask = val_loss_mask.to(device)
                                 else:
                                     val_inputs, val_targets = val_batch_data
-                                
-                                val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+                                    val_inputs = val_inputs.to(device)
+                                    val_targets = val_targets.to(device)
+                                    val_loss_mask = None
                                 
                                 with autocast(
                                     device_type=device_type,
                                     dtype=autocast_dtype,
                                     enabled=use_mixed_precision
                                 ):
-                                    val_loss = model(val_inputs, val_targets)
+                                    if val_loss_mask is not None:
+                                        # SFT: Compute loss with masking
+                                        logits = model(val_inputs, targets=None)
+                                        logits_flat = logits.view(-1, logits.size(-1))
+                                        targets_flat = val_targets.view(-1)
+                                        mask_flat = val_loss_mask.view(-1)
+                                        loss_unreduced = F.cross_entropy(logits_flat, targets_flat, reduction='none')
+                                        val_loss = (loss_unreduced * mask_flat).sum() / (mask_flat.sum() + 1e-8)
+                                    else:
+                                        # Regular training
+                                        val_loss = model(val_inputs, val_targets)
                                     
                                     quick_val_loss += val_loss.item()
                                     quick_batches += 1
@@ -785,8 +802,18 @@ def train(
             print(f"  Accumulation steps: {TRAINING_CONFIG['accumulation_steps']}")
             
             batch_counter = 0
-            for batch_idx, (inputs, targets) in enumerate(progress_bar):
-                inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
+            for batch_idx, batch_data in enumerate(progress_bar):
+                # Handle both regular datasets and SFT datasets (with loss masking)
+                if training_stage == 'sft' and len(batch_data) == 3:
+                    inputs, targets, loss_mask = batch_data
+                    inputs = inputs.to(device, non_blocking=True)
+                    targets = targets.to(device, non_blocking=True)
+                    loss_mask = loss_mask.to(device, non_blocking=True)
+                else:
+                    inputs, targets = batch_data
+                    inputs = inputs.to(device, non_blocking=True)
+                    targets = targets.to(device, non_blocking=True)
+                    loss_mask = None
                 
                 # Forward pass with mixed precision
                 with autocast(
@@ -794,7 +821,20 @@ def train(
                     dtype=autocast_dtype,
                     enabled=use_mixed_precision
                 ):
-                    loss = model(inputs, targets)
+                    if loss_mask is not None:
+                        # SFT: Compute loss with masking (only supervised tokens)
+                        logits = model(inputs, targets=None)  # Get logits without loss
+                        logits_flat = logits.view(-1, logits.size(-1))
+                        targets_flat = targets.view(-1)
+                        loss_mask_flat = loss_mask.view(-1)
+                        
+                        # Compute loss only on masked positions
+                        loss_unreduced = F.cross_entropy(logits_flat, targets_flat, reduction='none')
+                        loss = (loss_unreduced * loss_mask_flat).sum() / (loss_mask_flat.sum() + 1e-8)
+                    else:
+                        # Regular training: standard cross-entropy
+                        loss = model(inputs, targets)
+                    
                     loss = loss / TRAINING_CONFIG['accumulation_steps']
                 
                 # Backward pass
@@ -804,6 +844,7 @@ def train(
                     loss.backward()
                 
                 batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
+                batch_bpb = batch_loss / math.log(2)  # Convert nats to bits
                 
                 total_train_loss += batch_loss
                 num_train_batches += 1
@@ -886,19 +927,34 @@ def train(
                             if val_batch_idx >= 10:  # Quick eval
                                 break
                             
+                            # Handle both regular datasets and SFT datasets (with loss masking)
                             if isinstance(val_batch_data, tuple) and len(val_batch_data) == 3:
-                                val_inputs, val_targets, _ = val_batch_data
+                                val_inputs, val_targets, val_loss_mask = val_batch_data
+                                val_inputs = val_inputs.to(device)
+                                val_targets = val_targets.to(device)
+                                val_loss_mask = val_loss_mask.to(device)
                             else:
                                 val_inputs, val_targets = val_batch_data
-                            
-                            val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+                                val_inputs = val_inputs.to(device)
+                                val_targets = val_targets.to(device)
+                                val_loss_mask = None
                             
                             with torch.autocast(
                                     device_type=device_type,
                                     dtype=autocast_dtype,
                                     enabled=use_mixed_precision
                                 ):
-                                val_loss = model(val_inputs, val_targets)
+                                if val_loss_mask is not None:
+                                    # SFT: Compute loss with masking
+                                    logits = model(val_inputs, targets=None)
+                                    logits_flat = logits.view(-1, logits.size(-1))
+                                    targets_flat = val_targets.view(-1)
+                                    mask_flat = val_loss_mask.view(-1)
+                                    loss_unreduced = F.cross_entropy(logits_flat, targets_flat, reduction='none')
+                                    val_loss = (loss_unreduced * mask_flat).sum() / (mask_flat.sum() + 1e-8)
+                                else:
+                                    # Regular training
+                                    val_loss = model(val_inputs, val_targets)
                             
                             quick_val_loss += val_loss.item()
                             quick_batches += 1

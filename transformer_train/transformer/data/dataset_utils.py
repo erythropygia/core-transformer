@@ -66,8 +66,8 @@ class TurkishWikipedia(TurkishDataset):
                             break
                         text = row.get(self.text_column, '')
                         if text and len(str(text)) > 50:  # Minimum length filter
-                            # Add BOS token to each document
-                            yield f"<|bos|>{str(text)}"
+                            # BOS and EOS will be added by dataloader tokenizer
+                            yield str(text)
                             count += 1
         except Exception as e:
             print(f"Warning: Could not load Turkish Wikipedia from {self.data_dir}: {e}")
@@ -101,8 +101,8 @@ class TurkishNews(TurkishDataset):
                             break
                         text = row.get(self.text_column, '')
                         if text and len(str(text)) > 50:  # Minimum length filter
-                            # Add BOS token to each document
-                            yield f"<|bos|>{str(text)}"
+                            # BOS and EOS will be added by dataloader tokenizer
+                            yield str(text)
                             count += 1
         except Exception as e:
             print(f"Warning: Could not load Turkish news from {self.data_dir}: {e}")
@@ -138,8 +138,8 @@ class TurkishQA(TurkishDataset):
                         question = row.get(self.question_column, '')
                         answer = row.get(self.answer_column, '')
                         if question and answer:
-                            # Format with BOS: "<|bos|>Soru: ... Cevap: ..."
-                            text = f"<|bos|>Soru: {str(question)} Cevap: {str(answer)}"
+                            # Format text - BOS and EOS will be added by dataloader tokenizer
+                            text = f"Soru: {str(question)} Cevap: {str(answer)}"
                             yield text
                             count += 1
         except Exception as e:
@@ -176,8 +176,8 @@ class TurkishMath(TurkishDataset):
                         question = row.get(self.question_column, '')
                         answer = row.get(self.answer_column, '')
                         if question and answer:
-                            # Format with BOS: "<|bos|>Soru: ... Cevap: ..."
-                            text = f"<|bos|>Soru: {str(question)} Cevap: {str(answer)}"
+                            # Format text - BOS and EOS will be added by dataloader tokenizer
+                            text = f"Soru: {str(question)} Cevap: {str(answer)}"
                             yield text
                             count += 1
         except Exception as e:

@@ -205,10 +205,26 @@ Türkiye'nin başkenti Ankara'dır.
 Yapay zeka teknolojisi hızla gelişiyor.
 Numbers: 123, 4567, 89
 Special chars: @#$%^&*()"""
+
+# Test 1: Basic round-trip
 encoded = tokenizer.encode(test_text)
 decoded = tokenizer.decode(encoded)
 assert decoded == test_text, f"Round-trip test failed!\nOriginal: {test_text}\nDecoded: {decoded}"
 print("\nRound-trip encoding test passed!")
+
+# Test 2: BOS/EOS token functionality
+bos_id = tokenizer.get_bos_token_id()
+eos_id = tokenizer.get_eos_token_id()
+print(f"\nSpecial Tokens:")
+print(f"  BOS token ID: {bos_id} -> '{tokenizer.decode([bos_id])}'")
+print(f"  EOS token ID: {eos_id} -> '{tokenizer.decode([eos_id])}'")
+
+# Test 3: Encode with BOS and EOS
+encoded_with_special = tokenizer.encode(test_text, prepend=bos_id, append=eos_id)
+assert encoded_with_special[0] == bos_id, f"BOS token not at start! Got {encoded_with_special[0]}"
+assert encoded_with_special[-1] == eos_id, f"EOS token not at end! Got {encoded_with_special[-1]}"
+print(f"BOS/EOS prepend/append test passed!")
+print(f"  Encoded length: {len(encoded_with_special)} (including BOS+EOS)")
 
 # -----------------------------------------------------------------------------
 # Save token bytes for bits-per-byte evaluation

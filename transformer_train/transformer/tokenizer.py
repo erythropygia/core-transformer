@@ -184,6 +184,7 @@ class RustBPETokenizer:
 
         # fetch all the special tokens we need
         bos = self.get_bos_token_id()
+        eos = self.get_eos_token_id()
         user_start, user_end = self.encode_special("<|user_start|>"), self.encode_special("<|user_end|>")
         assistant_start, assistant_end = self.encode_special("<|assistant_start|>"), self.encode_special("<|assistant_end|>")
         python_start, python_end = self.encode_special("<|python_start|>"), self.encode_special("<|python_end|>")
@@ -234,6 +235,9 @@ class RustBPETokenizer:
                 else:
                     raise ValueError(f"Unknown content type: {type(content)}")
                 add_tokens(assistant_end, 1)
+
+        # Add EOS token at the end of conversation
+        add_tokens(eos, 1)
 
         # truncate to max_tokens tokens MAX (helps prevent OOMs)
         ids = ids[:max_tokens]

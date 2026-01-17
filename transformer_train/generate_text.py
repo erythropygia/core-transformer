@@ -97,9 +97,14 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
     
     # Get end-of-sequence tokens
     bos_token_id = None
+    eos_token_id = None
     assistant_end_token_id = None
     try:
         bos_token_id = tokenizer.get_bos_token_id()
+    except:
+        pass
+    try:
+        eos_token_id = tokenizer.get_eos_token_id()
     except:
         pass
     try:
@@ -127,6 +132,7 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
             
             # Stop early if we hit an end-of-sequence token (don't include it in output)
             if (bos_token_id is not None and token == bos_token_id) or \
+               (eos_token_id is not None and token == eos_token_id) or \
                (assistant_end_token_id is not None and token == assistant_end_token_id):
                 break
             

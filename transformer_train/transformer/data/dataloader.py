@@ -34,8 +34,9 @@ def tokenizing_distributed_data_loader_with_state(
         else:
             tokenizer = create_tokenizer(model_path=tokenizer_path)
     
-    # Get BOS token
+    # Get BOS and EOS tokens
     bos_token = tokenizer.get_bos_token_id()
+    eos_token = tokenizer.get_eos_token_id()
     
     # Get distributed info
     ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
@@ -123,16 +124,17 @@ def tokenizing_distributed_data_loader_with_state(
         while len(token_buffer) < needed_tokens:
             doc_batch, (pq_idx, rg_idx, epoch) = next(batches)
             
-            # Tokenize batch
+            # Tokenize batch with BOS and EOS tokens
             try:
                 token_lists = tokenizer.encode(
                     doc_batch,
                     prepend=bos_token,
+                    append=eos_token,
                     num_threads=tokenizer_threads if isinstance(doc_batch, list) else 1
                 )
             except TypeError:
                 # Fallback to single encoding
-                token_lists = [tokenizer.encode(text, prepend=bos_token) for text in doc_batch]
+                token_lists = [tokenizer.encode(text, prepend=bos_token, append=eos_token) for text in doc_batch]
             
             # Add tokens to buffer
             for tokens in token_lists:
@@ -206,8 +208,9 @@ def tokenizing_distributed_data_loader_bos_bestfit(
         else:
             tokenizer = create_tokenizer(model_path=tokenizer_path)
     
-    # Get BOS token
+    # Get BOS and EOS tokens
     bos_token = tokenizer.get_bos_token_id()
+    eos_token = tokenizer.get_eos_token_id()
     
     # Get distributed info
     ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
@@ -263,15 +266,16 @@ def tokenizing_distributed_data_loader_bos_bestfit(
                     for i in range(0, len(batch), tokenizer_batch_size):
                         doc_batch = batch[i:i+tokenizer_batch_size]
                         
-                        # Tokenize with BOS
+                        # Tokenize with BOS and EOS
                         try:
                             token_lists = tokenizer.encode(
                                 doc_batch,
                                 prepend=bos_token,
+                                append=eos_token,
                                 num_threads=tokenizer_threads if isinstance(doc_batch, list) else 1
                             )
                         except TypeError:
-                            token_lists = [tokenizer.encode(text, prepend=bos_token) for text in doc_batch]
+                            token_lists = [tokenizer.encode(text, prepend=bos_token, append=eos_token) for text in doc_batch]
                         
                         # Yield individual documents
                         for tokens in token_lists:
