@@ -57,11 +57,7 @@ TRAINING_CONFIG = {
     'early_stopping_min_delta': 0.001,
     
     'vocab_size': 32000,
-    'max_data_samples': 150000,  
-    
-    # DeepSpeed Optimization
-    'use_deepspeed': False,         
-    'deepspeed_config_path': 'transformer_train/deepspeed_config/deepspeed_config.json',
+    'max_data_samples': 150000,
 }
 
 TEST_PROMPTS = [
@@ -140,3 +136,34 @@ SFT_DATASET_CONFIG = {
         },
     ]
 }
+
+# -----------------------------------------------------------------------------
+# Config Validation
+# -----------------------------------------------------------------------------
+
+VALID_TRAINING_STAGES = ['base', 'mid', 'sft']
+
+def validate_config():
+    """Validate training configuration at startup"""
+    stage = TRAINING_CONFIG.get('training_stage', 'base')
+    
+    # Validate training stage
+    if stage not in VALID_TRAINING_STAGES:
+        raise ValueError(
+            f"Invalid training_stage: '{stage}'. "
+            f"Must be one of: {VALID_TRAINING_STAGES}"
+        )
+    
+    # Validate dataset config exists
+    if stage not in TRAINING_STAGE_DATASET_MAP:
+        raise ValueError(
+            f"Training stage '{stage}' not found in TRAINING_STAGE_DATASET_MAP"
+        )
+    
+    dataset_config_name = TRAINING_STAGE_DATASET_MAP[stage]
+    if dataset_config_name not in globals():
+        raise ValueError(
+            f"Dataset config not found: {dataset_config_name}"
+        )
+    
+    print(f"✓ Config validation passed: training_stage='{stage}', dataset_config='{dataset_config_name}'")

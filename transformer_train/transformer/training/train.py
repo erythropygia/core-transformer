@@ -8,25 +8,18 @@ from tqdm import tqdm
 import wandb
 from contextlib import redirect_stdout, redirect_stderr
 
-from transformer_train.deepspeed_config.deepspeed_config import create_deepspeed_config
-
 from ..utils import EarlyStopping, cleanup_memory, evaluate_model_comprehensive, get_cosine_schedule_with_warmup, get_gpu_memory_info, get_memory_usage, get_memory_usage_safe
 from ..config import (
     MODEL_CONFIG, TRAINING_CONFIG, TEST_PROMPTS, 
     BASE_DATASET_CONFIG, MID_DATASET_CONFIG, SFT_DATASET_CONFIG,
-    TRAINING_STAGE_DATASET_MAP
+    TRAINING_STAGE_DATASET_MAP, validate_config
 )
 from ..tokenizer import create_tokenizer
 from ..data.dataset import TransformerDataset, load_and_preprocess_data
+from ..data.sft_dataset import SFTDataset
 from ..data.dataloader import tokenizing_distributed_data_loader_with_state, tokenizing_distributed_data_loader
 from ..data.dataset_utils import create_mid_datasets, create_sft_datasets
 from ..model.transformer_block import Transformer
-
-try:
-    import deepspeed
-    DEEPSPEED_AVAILABLE = True
-except ImportError:
-    DEEPSPEED_AVAILABLE = False
 
 try:
     from safetensors.torch import save_file, load_file
@@ -52,6 +45,9 @@ def train(
     
     print("Transformer train")
     print("="*80)
+    
+    # Validate configuration
+    validate_config()
     
     # Initialize training state.
     global_step = 0
@@ -79,7 +75,6 @@ def train(
         print(f"CUDA not available, using CPU")
     
     print(f"Flash Attention: {'Available' if FLASH_ATTENTION_AVAILABLE else 'Not Available'}")
-    print(f"DeepSpeed: {'Enabled' if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed'] else 'Disabled'}")
     
     # Mixed precision settings
     use_mixed_precision = device_type == 'cuda' and TRAINING_CONFIG.get('use_mixed_precision', True)
@@ -209,23 +204,19 @@ def train(
             print(f"\nLoading SFT (chat) datasets...")
             sft_datasets = create_sft_datasets(dataset_config)
             
-            # Convert conversation format to text (using tokenizer's render_conversation)
-            full_corpus = []
+            # Collect conversations (not text, keep as conversation dicts)
+            conversations = []
             for dataset in sft_datasets:
                 for conv in dataset:
                     if isinstance(conv, dict) and 'messages' in conv:
-                        # Render conversation to text format
-                        text = tokenizer.render_conversation(conv['messages'])
-                        full_corpus.append(text)
-                    else:
-                        full_corpus.append(str(conv))
+                        conversations.append(conv)
                     
-                    if TRAINING_CONFIG['max_data_samples'] and len(full_corpus) >= TRAINING_CONFIG['max_data_samples']:
+                    if TRAINING_CONFIG['max_data_samples'] and len(conversations) >= TRAINING_CONFIG['max_data_samples']:
                         break
-                if TRAINING_CONFIG['max_data_samples'] and len(full_corpus) >= TRAINING_CONFIG['max_data_samples']:
+                if TRAINING_CONFIG['max_data_samples'] and len(conversations) >= TRAINING_CONFIG['max_data_samples']:
                     break
             
-            print(f"Loaded {len(full_corpus):,} conversation samples from SFT datasets")
+            print(f"Loaded {len(conversations):,} conversation samples from SFT datasets")
             
         else:
             # Base training fallback (should not happen if parquet files exist)
@@ -233,31 +224,49 @@ def train(
             print(f"Please ensure parquet files are in: {data_dir}")
             raise FileNotFoundError(f"Parquet files not found in {data_dir}. Base training requires parquet files.")
         
-        print("Tokenizing data...")
-        all_tokens = []
-        for text in tqdm(full_corpus, desc="Encoding texts"):
-            tokens = tokenizer.encode(text, add_special_tokens=False)
-            if isinstance(tokens, list) and len(tokens) > 0 and isinstance(tokens[0], list):
-                tokens = tokens[0]
-            all_tokens.extend(tokens)
+        # Different handling for SFT vs Mid training
+        if training_stage == 'sft':
+            # SFT: Use SFTDataset with loss masking
+            print("Creating SFT datasets with loss masking...")
+            split_idx = int(0.9 * len(conversations))
+            train_conversations = conversations[:split_idx]
+            val_conversations = conversations[split_idx:]
             
-            if len(all_tokens) % 1000000 == 0:
-                cleanup_memory()
-        
-        # Split data
-        split_idx = int(0.9 * len(all_tokens))
-        train_tokens = all_tokens[:split_idx]
-        val_tokens = all_tokens[split_idx:]
-        
-        print(f"Total tokens: {len(all_tokens):,}")
-        print(f"Train tokens: {len(train_tokens):,}")
-        print(f"Val tokens: {len(val_tokens):,}")
-        
-        del all_tokens, full_corpus
-        cleanup_memory()
-        
-        train_dataset = TransformerDataset(train_tokens, MODEL_CONFIG['block_size'])
-        val_dataset = TransformerDataset(val_tokens, MODEL_CONFIG['block_size'])
+            print(f"Train conversations: {len(train_conversations):,}")
+            print(f"Val conversations: {len(val_conversations):,}")
+            
+            train_dataset = SFTDataset(train_conversations, tokenizer, MODEL_CONFIG['block_size'])
+            val_dataset = SFTDataset(val_conversations, tokenizer, MODEL_CONFIG['block_size'])
+            
+            del conversations
+            cleanup_memory()
+        else:
+            # Mid training: Use standard TransformerDataset
+            print("Tokenizing data...")
+            all_tokens = []
+            for text in tqdm(full_corpus, desc="Encoding texts"):
+                tokens = tokenizer.encode(text, add_special_tokens=False)
+                if isinstance(tokens, list) and len(tokens) > 0 and isinstance(tokens[0], list):
+                    tokens = tokens[0]
+                all_tokens.extend(tokens)
+                
+                if len(all_tokens) % 1000000 == 0:
+                    cleanup_memory()
+            
+            # Split data
+            split_idx = int(0.9 * len(all_tokens))
+            train_tokens = all_tokens[:split_idx]
+            val_tokens = all_tokens[split_idx:]
+            
+            print(f"Total tokens: {len(all_tokens):,}")
+            print(f"Train tokens: {len(train_tokens):,}")
+            print(f"Val tokens: {len(val_tokens):,}")
+            
+            del all_tokens, full_corpus
+            cleanup_memory()
+            
+            train_dataset = TransformerDataset(train_tokens, MODEL_CONFIG['block_size'])
+            val_dataset = TransformerDataset(val_tokens, MODEL_CONFIG['block_size'])
         
         train_loader = DataLoader(
             train_dataset, 
@@ -336,95 +345,71 @@ def train(
         model = torch.compile(model, dynamic=False)
         print("Model compiled successfully!")
     
-    if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-        print(f"\nSetting up DeepSpeed for GPU")
+    print(f"\nUsing standard PyTorch training...")
+    
+    # Use Muon optimizer if enabled, otherwise use standard AdamW
+    use_muon = TRAINING_CONFIG.get('use_muon_optimizer', False)
+    
+    if use_muon:
+        print("Using Muon optimizer with separate learning rates")
         
-        if TRAINING_CONFIG['deepspeed_config_path'] is None:
-            deepspeed_config = create_deepspeed_config(TRAINING_CONFIG, MODEL_CONFIG)
-            print(f"Using auto-generated DeepSpeed config:")
-            print(f"  ZeRO Stage: {deepspeed_config['zero_optimization']['stage']}")
-            print(f"  CPU Offload: {deepspeed_config['zero_optimization']['cpu_offload']}")
-            print(f"  Mixed Precision: {deepspeed_config['fp16']['enabled']}")
-            print(f"  Activation Checkpointing: {deepspeed_config['activation_checkpointing']['partition_activations']}")
-        else:
-            with open(TRAINING_CONFIG['deepspeed_config_path'], 'r') as f:
-                deepspeed_config = json.load(f)
+        # Apply LR scaling based on model dimension
+        dmodel_lr_scale = (MODEL_CONFIG['n_embd'] / 768) ** -0.5
         
-        model_engine, optimizer, _, scheduler = deepspeed.initialize(
-            model=orig_model,  # Use original model for DeepSpeed
-            model_parameters=orig_model.parameters(),
-            config=deepspeed_config
+        optimizers = orig_model.setup_optimizers(
+            unembedding_lr=TRAINING_CONFIG.get('unembedding_lr', 0.004) * dmodel_lr_scale,
+            embedding_lr=TRAINING_CONFIG.get('embedding_lr', 0.2) * dmodel_lr_scale,
+            matrix_lr=TRAINING_CONFIG.get('matrix_lr', 0.02) * dmodel_lr_scale,
+            weight_decay=TRAINING_CONFIG.get('weight_decay', 0.0),
+            beta1=TRAINING_CONFIG.get('beta1', 0.9),
+            beta2=TRAINING_CONFIG.get('beta2', 0.95)
         )
-        
-        model = model_engine
-        scaler = None  # DeepSpeed handles mixed precision
-        
-        print(f"DeepSpeed initialized!")
-        print(f"  Effective batch size: {deepspeed_config['train_batch_size']}")
-        print(f"  Micro batch size: {deepspeed_config['train_micro_batch_size_per_gpu']}")
-        print(f"  Memory usage after DeepSpeed: {get_memory_usage()}")
-        
+        print(f"  LR scale factor (based on d_model={MODEL_CONFIG['n_embd']}): {dmodel_lr_scale:.4f}")
+        # For compatibility, we'll use the first optimizer (AdamW) for scheduler
+        # In practice, you might want separate schedulers for each optimizer
+        optimizer = optimizers[0]  # AdamW optimizer
+        muon_optimizer = optimizers[1]  # Muon optimizer
+        print(f"  AdamW optimizer: {len(optimizer.param_groups)} param groups")
+        print(f"  Muon optimizer: {len(muon_optimizer.param_groups)} param groups")
     else:
-        print(f"\nUsing standard PyTorch training...")
-        
-        # Use Muon optimizer if enabled, otherwise use standard AdamW
-        use_muon = TRAINING_CONFIG.get('use_muon_optimizer', False)
-        
-        if use_muon:
-            print("Using Muon optimizer with separate learning rates")
-            optimizers = orig_model.setup_optimizers(
-                unembedding_lr=TRAINING_CONFIG.get('unembedding_lr', 0.004),
-                embedding_lr=TRAINING_CONFIG.get('embedding_lr', 0.2),
-                matrix_lr=TRAINING_CONFIG.get('matrix_lr', 0.02),
-                weight_decay=TRAINING_CONFIG.get('weight_decay', 0.0),
-                beta1=TRAINING_CONFIG.get('beta1', 0.9),
-                beta2=TRAINING_CONFIG.get('beta2', 0.95)
-            )
-            # For compatibility, we'll use the first optimizer (AdamW) for scheduler
-            # In practice, you might want separate schedulers for each optimizer
-            optimizer = optimizers[0]  # AdamW optimizer
-            muon_optimizer = optimizers[1]  # Muon optimizer
-            print(f"  AdamW optimizer: {len(optimizer.param_groups)} param groups")
-            print(f"  Muon optimizer: {len(muon_optimizer.param_groups)} param groups")
-        else:
-            optimizer = torch.optim.AdamW(
-                orig_model.parameters(),
-                lr=TRAINING_CONFIG['learning_rate'],
-                weight_decay=TRAINING_CONFIG['weight_decay'],
-                betas=(TRAINING_CONFIG['beta1'], TRAINING_CONFIG['beta2']),
-                eps=1e-8,
-                fused=True if device_type == 'cuda' else False
-            )
-            muon_optimizer = None
-        
-        # Scheduler
-        total_steps = steps_per_epoch * TRAINING_CONFIG['max_epochs']
-        warmup_steps = min(
-            total_steps,
-            max(1, int(steps_per_epoch * TRAINING_CONFIG['warmup_epochs']))
+        optimizer = torch.optim.AdamW(
+            orig_model.parameters(),
+            lr=TRAINING_CONFIG['learning_rate'],
+            weight_decay=TRAINING_CONFIG['weight_decay'],
+            betas=(TRAINING_CONFIG['beta1'], TRAINING_CONFIG['beta2']),
+            eps=1e-8,
+            fused=True if device_type == 'cuda' else False
         )
-        
-        scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
-        print(f"Scheduler: Cosine with warmup ({warmup_steps:,} warmup steps)")
-        
-        # Create scheduler for Muon optimizer if using Muon
-        muon_scheduler = None
-        if use_muon and muon_optimizer is not None:
-            # Create a separate scheduler for Muon optimizer with same schedule
-            muon_scheduler = get_cosine_schedule_with_warmup(muon_optimizer, warmup_steps, total_steps)
-            print(f"Muon scheduler: Cosine with warmup ({warmup_steps:,} warmup steps)")
-        
-        # Muon momentum scheduler function
-        def get_muon_momentum(step):
-            frac = min(step / 300, 1)
-            momentum = (1 - frac) * 0.85 + frac * 0.95
-            return momentum
-        
-        # Mixed precision scaler
-        use_grad_scaler = use_mixed_precision and not use_bfloat16
-        scaler = GradScaler(device_type) if use_grad_scaler else None
-        print(f"Mixed precision: {'bf16' if use_bfloat16 else 'fp16' if use_mixed_precision else 'disabled'}"
-              f" ({'GradScaler' if scaler else 'no scaler'})")
+        muon_optimizer = None
+    
+    # Scheduler
+    total_steps = steps_per_epoch * TRAINING_CONFIG['max_epochs']
+    warmup_steps = min(
+        total_steps,
+        max(1, int(steps_per_epoch * TRAINING_CONFIG['warmup_epochs']))
+    )
+    
+    scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+    print(f"Scheduler: Cosine with warmup ({warmup_steps:,} warmup steps)")
+    
+    # Create scheduler for Muon optimizer if using Muon
+    muon_scheduler = None
+    if use_muon and muon_optimizer is not None:
+        # Create a separate scheduler for Muon optimizer with same schedule
+        muon_scheduler = get_cosine_schedule_with_warmup(muon_optimizer, warmup_steps, total_steps)
+        print(f"Muon scheduler: Cosine with warmup ({warmup_steps:,} warmup steps)")
+    
+    # Muon momentum scheduler function
+    def get_muon_momentum(step):
+        frac = min(step / 300, 1)
+        momentum = (1 - frac) * 0.85 + frac * 0.95
+        return momentum
+    
+    # Mixed precision scaler
+    use_grad_scaler = use_mixed_precision and not use_bfloat16
+    scaler = GradScaler(device_type) if use_grad_scaler else None
+    print(f"Mixed precision: {'bf16' if use_bfloat16 else 'fp16' if use_mixed_precision else 'disabled'}"
+          f" ({'GradScaler' if scaler else 'no scaler'})")
     
         # Resume logic (skip for pretrained)
     if not pretrained_model_path:
@@ -574,34 +559,24 @@ def train(
                 with autocast(
                     device_type=device_type,
                     dtype=autocast_dtype,
-                    enabled=(use_mixed_precision and not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']))
+                    enabled=use_mixed_precision
                 ):
                     loss = model(inputs, targets)
-                    if not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']):
-                        loss = loss / TRAINING_CONFIG['accumulation_steps']
+                    loss = loss / TRAINING_CONFIG['accumulation_steps']
                 
                 # Backward pass
-                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                    model.backward(loss)
+                if scaler:
+                    scaler.scale(loss).backward()
                 else:
-                    if scaler:
-                        scaler.scale(loss).backward()
-                    else:
-                        loss.backward()
+                    loss.backward()
                 
-                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                    batch_loss = loss.item()
-                else:
-                    batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
+                batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
                 
                 total_train_loss += batch_loss
                 num_train_batches += 1
                 batch_counter += 1
                 
-                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                    current_lr = model.get_lr()[0] if hasattr(model, 'get_lr') else TRAINING_CONFIG['learning_rate']
-                else:
-                    current_lr = scheduler.get_last_lr()[0]
+                current_lr = scheduler.get_last_lr()[0]
                 
                 # Update parquet info for progress tracking
                 if dataloader_state_dict is not None:
@@ -624,46 +599,43 @@ def train(
                 
                 # Optimizer step
                 if (batch_idx + 1) % TRAINING_CONFIG['accumulation_steps'] == 0:
-                    if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                        model.step()
-                    else:
-                        # Update Muon momentum before optimizer step
+                    # Update Muon momentum before optimizer step
+                    if muon_optimizer is not None:
+                        muon_momentum = get_muon_momentum(global_step)
+                        for group in muon_optimizer.param_groups:
+                            group["momentum"] = muon_momentum
+                    
+                    if scaler:
+                        scaler.unscale_(optimizer)
                         if muon_optimizer is not None:
-                            muon_momentum = get_muon_momentum(global_step)
-                            for group in muon_optimizer.param_groups:
-                                group["momentum"] = muon_momentum
-                        
-                        if scaler:
-                            scaler.unscale_(optimizer)
-                            if muon_optimizer is not None:
-                                all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
-                                if muon_optimizer.param_groups:
-                                    all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
-                                torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
-                            else:
-                                torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
-                            scaler.step(optimizer)
-                            if muon_optimizer is not None:
-                                muon_optimizer.step()
-                            scaler.update()
+                            all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
+                            if muon_optimizer.param_groups:
+                                all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
+                            torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
                         else:
-                            if muon_optimizer is not None:
-                                all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
-                                if muon_optimizer.param_groups:
-                                    all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
-                                torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
-                            else:
-                                torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
-                            optimizer.step()
-                            if muon_optimizer is not None:
-                                muon_optimizer.step()
-                        
-                        scheduler.step()
-                        if muon_scheduler is not None:
-                            muon_scheduler.step()
-                        optimizer.zero_grad()
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
+                        scaler.step(optimizer)
                         if muon_optimizer is not None:
-                            muon_optimizer.zero_grad()
+                            muon_optimizer.step()
+                        scaler.update()
+                    else:
+                        if muon_optimizer is not None:
+                            all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
+                            if muon_optimizer.param_groups:
+                                all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
+                            torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
+                        else:
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
+                        optimizer.step()
+                        if muon_optimizer is not None:
+                            muon_optimizer.step()
+                    
+                    scheduler.step()
+                    if muon_scheduler is not None:
+                        muon_scheduler.step()
+                    optimizer.zero_grad()
+                    if muon_optimizer is not None:
+                        muon_optimizer.zero_grad()
                     
                     # Increment global_step for actual training steps
                     global_step += 1
@@ -811,34 +783,24 @@ def train(
                 with autocast(
                     device_type=device_type,
                     dtype=autocast_dtype,
-                    enabled=(use_mixed_precision and not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']))
+                    enabled=use_mixed_precision
                 ):
                     loss = model(inputs, targets)
-                    if not (DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']):
-                        loss = loss / TRAINING_CONFIG['accumulation_steps']
+                    loss = loss / TRAINING_CONFIG['accumulation_steps']
                 
                 # Backward pass
-                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                    model.backward(loss)
+                if scaler:
+                    scaler.scale(loss).backward()
                 else:
-                    if scaler:
-                        scaler.scale(loss).backward()
-                    else:
-                        loss.backward()
+                    loss.backward()
                 
-                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                    batch_loss = loss.item()
-                else:
-                    batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
+                batch_loss = loss.item() * TRAINING_CONFIG['accumulation_steps']
                 
                 total_train_loss += batch_loss
                 num_train_batches += 1
                 batch_counter += 1
                 
-                if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                    current_lr = model.get_lr()[0] if hasattr(model, 'get_lr') else TRAINING_CONFIG['learning_rate']
-                else:
-                    current_lr = scheduler.get_last_lr()[0]
+                current_lr = scheduler.get_last_lr()[0]
                 
                 progress_bar.set_postfix({
                     'loss': f"{batch_loss:.4f}",
@@ -851,48 +813,45 @@ def train(
                 
                 # Optimizer step
                 if (batch_idx + 1) % TRAINING_CONFIG['accumulation_steps'] == 0:
-                    if DEEPSPEED_AVAILABLE and TRAINING_CONFIG['use_deepspeed']:
-                        model.step()
-                    else:
-                        # Update Muon momentum before optimizer step
+                    # Update Muon momentum before optimizer step
+                    if muon_optimizer is not None:
+                        muon_momentum = get_muon_momentum(global_step)
+                        for group in muon_optimizer.param_groups:
+                            group["momentum"] = muon_momentum
+                    
+                    if scaler:
+                        scaler.unscale_(optimizer)
                         if muon_optimizer is not None:
-                            muon_momentum = get_muon_momentum(global_step)
-                            for group in muon_optimizer.param_groups:
-                                group["momentum"] = muon_momentum
-                        
-                        if scaler:
-                            scaler.unscale_(optimizer)
-                            if muon_optimizer is not None:
-                                # Clip gradients for both optimizers
-                                all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
-                                if muon_optimizer.param_groups:
-                                    all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
-                                torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
-                            else:
-                                torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
-                            scaler.step(optimizer)
-                            if muon_optimizer is not None:
-                                muon_optimizer.step()
-                            scaler.update()
+                            # Clip gradients for both optimizers
+                            all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
+                            if muon_optimizer.param_groups:
+                                all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
+                            torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
                         else:
-                            if muon_optimizer is not None:
-                                # Clip gradients for both optimizers
-                                all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
-                                if muon_optimizer.param_groups:
-                                    all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
-                                torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
-                            else:
-                                torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
-                            optimizer.step()
-                            if muon_optimizer is not None:
-                                muon_optimizer.step()
-                        
-                        scheduler.step()
-                        if muon_scheduler is not None:
-                            muon_scheduler.step()
-                        optimizer.zero_grad()
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
+                        scaler.step(optimizer)
                         if muon_optimizer is not None:
-                            muon_optimizer.zero_grad()
+                            muon_optimizer.step()
+                        scaler.update()
+                    else:
+                        if muon_optimizer is not None:
+                            # Clip gradients for both optimizers
+                            all_params = list(optimizer.param_groups[0]['params']) + list(optimizer.param_groups[1]['params'])
+                            if muon_optimizer.param_groups:
+                                all_params.extend([p for group in muon_optimizer.param_groups for p in group['params']])
+                            torch.nn.utils.clip_grad_norm_(all_params, TRAINING_CONFIG['grad_clip'])
+                        else:
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), TRAINING_CONFIG['grad_clip'])
+                        optimizer.step()
+                        if muon_optimizer is not None:
+                            muon_optimizer.step()
+                    
+                    scheduler.step()
+                    if muon_scheduler is not None:
+                        muon_scheduler.step()
+                    optimizer.zero_grad()
+                    if muon_optimizer is not None:
+                        muon_optimizer.zero_grad()
                 
                     # Increment global_step for actual training steps
                     global_step += 1
@@ -1123,98 +1082,64 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
     
     os.makedirs(os.path.dirname(checkpoint_path) if os.path.dirname(checkpoint_path) else ".", exist_ok=True)
     
-    if DEEPSPEED_AVAILABLE and hasattr(model, 'save_checkpoint'):
-        checkpoint_dir = os.path.dirname(checkpoint_path)
-        checkpoint_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
-        
-        model.save_checkpoint(checkpoint_dir, checkpoint_name)
-        
-        metadata = {
-            'epoch': str(epoch),
-            'global_step': str(global_step),
-            'best_val_loss': str(best_val_loss),
-            'best_perplexity': str(best_perplexity),
-            'config': json.dumps(config),
-            'tokenizer_path': tokenizer_path,
-            'training_config': json.dumps(TRAINING_CONFIG),
-            'model_config': json.dumps(MODEL_CONFIG),
-            'deepspeed': 'true',
-            'model_type': 'TurkishTransformer'
+    if not SAFETENSORS_AVAILABLE:
+        raise ImportError("SafeTensors not available. Install with: pip install safetensors")
+    
+    # Model state - untied weights, so save everything
+    model_state = {}
+    state_dict = model.state_dict() if hasattr(model, 'state_dict') else model.module.state_dict()
+    
+    for name, param in state_dict.items():
+        model_state[name] = param
+    
+    # Metadata
+    metadata = {
+        'epoch': str(epoch),
+        'global_step': str(global_step),
+        'best_val_loss': str(best_val_loss),
+        'best_perplexity': str(best_perplexity),
+        'config': json.dumps(config),
+        'tokenizer_path': tokenizer_path,
+        'training_config': json.dumps(TRAINING_CONFIG),
+        'model_config': json.dumps(MODEL_CONFIG),
+        'weight_tying': 'false',  # Untied weights
+        'model_type': 'Transformer'
+    }
+    
+    # Add dataloader state if available
+    # Use single source of truth for epoch (from dataloader state if available)
+    if dataloader_state_dict is not None:
+        metadata['parquet_index'] = str(dataloader_state_dict.get('pq_idx', 0))
+        metadata['row_group_index'] = str(dataloader_state_dict.get('rg_idx', 0))
+        # Epoch from dataloader is source of truth
+        current_epoch = dataloader_state_dict.get('epoch', epoch)
+        metadata['epoch'] = str(current_epoch)
+    
+    # Save to SafeTensors
+    save_file(model_state, checkpoint_path, metadata=metadata)
+    
+    if optimizer is not None:
+        additional_state_path = checkpoint_path.replace('.safetensors', '_state.pt')
+        additional_state = {
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict() if scheduler else None,
         }
         
-        # Add dataloader state if available
+        if scaler:
+            additional_state['scaler'] = scaler.state_dict()
+        
+        if muon_optimizer is not None:
+            additional_state['muon_optimizer'] = muon_optimizer.state_dict()
+        
+        if muon_scheduler is not None:
+            additional_state['muon_scheduler'] = muon_scheduler.state_dict()
+        
         if dataloader_state_dict is not None:
-            metadata['parquet_index'] = str(dataloader_state_dict.get('pq_idx', 0))
-            metadata['row_group_index'] = str(dataloader_state_dict.get('rg_idx', 0))
-            # Update epoch in metadata from dataloader state (more accurate for streaming)
-            if 'epoch' in dataloader_state_dict:
-                metadata['epoch'] = str(dataloader_state_dict['epoch'])
+            additional_state['dataloader_state_dict'] = dataloader_state_dict
         
-        metadata_path = checkpoint_path.replace('.safetensors', '_metadata.json')
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        
-        print(f"DeepSpeed checkpoint saved: {checkpoint_name}")
-        
-    else:
-        if not SAFETENSORS_AVAILABLE:
-            raise ImportError("SafeTensors not available. Install with: pip install safetensors")
-        
-        # Model state - untied weights, so save everything
-        model_state = {}
-        state_dict = model.state_dict() if hasattr(model, 'state_dict') else model.module.state_dict()
-        
-        for name, param in state_dict.items():
-            model_state[name] = param
-        
-        # Metadata
-        metadata = {
-            'epoch': str(epoch),
-            'global_step': str(global_step),
-            'best_val_loss': str(best_val_loss),
-            'best_perplexity': str(best_perplexity),
-            'config': json.dumps(config),
-            'tokenizer_path': tokenizer_path,
-            'training_config': json.dumps(TRAINING_CONFIG),
-            'model_config': json.dumps(MODEL_CONFIG),
-            'weight_tying': 'false',  # Untied weights
-            'deepspeed': 'false',
-            'model_type': 'Transformer'
-        }
-        
-        # Add dataloader state if available
-        if dataloader_state_dict is not None:
-            metadata['parquet_index'] = str(dataloader_state_dict.get('pq_idx', 0))
-            metadata['row_group_index'] = str(dataloader_state_dict.get('rg_idx', 0))
-            # Update epoch in metadata from dataloader state (more accurate for streaming)
-            if 'epoch' in dataloader_state_dict:
-                metadata['epoch'] = str(dataloader_state_dict['epoch'])
-        
-        # Save to SafeTensors
-        save_file(model_state, checkpoint_path, metadata=metadata)
-        
-        if optimizer is not None:
-            additional_state_path = checkpoint_path.replace('.safetensors', '_state.pt')
-            additional_state = {
-                'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict() if scheduler else None,
-            }
-            
-            if scaler:
-                additional_state['scaler'] = scaler.state_dict()
-            
-            if muon_optimizer is not None:
-                additional_state['muon_optimizer'] = muon_optimizer.state_dict()
-            
-            if muon_scheduler is not None:
-                additional_state['muon_scheduler'] = muon_scheduler.state_dict()
-            
-            if dataloader_state_dict is not None:
-                additional_state['dataloader_state_dict'] = dataloader_state_dict
-            
-            torch.save(additional_state, additional_state_path)
-        
-        print(f"Checkpoint saved: {os.path.basename(checkpoint_path)}")
+        torch.save(additional_state, additional_state_path)
+    
+    print(f"Checkpoint saved: {os.path.basename(checkpoint_path)}")
     
     cleanup_memory()
     return checkpoint_path

@@ -69,6 +69,7 @@ class Engine:
 
         # 3) Initialize states for each sample
         row_states = [tokens.copy() for _ in range(num_samples)]
+        completed = [False] * num_samples  # Track completion status
 
         # 4) Main generation loop
         num_generated = 0
@@ -99,11 +100,15 @@ class Engine:
                 token_column.append(next_token)
                 # Update the state of this row to include the next token
                 state.append(next_token)
-                # On <|assistant_end|> or <|bos|>, we could mark as completed (for future use)
+                # Mark as completed on special tokens
                 if assistant_end and next_token == assistant_end:
-                    pass  # Could mark as completed here
+                    completed[i] = True
                 if bos and next_token == bos:
-                    pass  # Could mark as completed here
+                    completed[i] = True
+
+            # Check if all samples are completed
+            if all(completed):
+                break
 
             # Yield the token column
             yield token_column, token_masks

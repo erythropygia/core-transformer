@@ -47,8 +47,12 @@ def tokenizing_distributed_data_loader_with_state(
             f"No parquet files found. Please provide parquet files in {data_dir or 'base_data'} directory."
         )
     
-    # Split train/val (last file is val)
-    parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
+    # Split train/val: Use last 10% of parquet files for validation
+    split_idx = int(len(parquet_paths) * 0.9)
+    parquet_paths = parquet_paths[:split_idx] if split == "train" else parquet_paths[split_idx:]
+    
+    if not parquet_paths:
+        raise ValueError(f"No parquet files found for split '{split}'. Total files: {len(parquet_paths)}")
     
     # Initial shuffle of parquet files (for training only)
     if split == "train" and shuffle_parquet_files:

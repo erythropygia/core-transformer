@@ -8,6 +8,8 @@ import torch
 SPECIAL_TOKENS = [
     # every document begins with the Beginning of Sequence (BOS) token that delimits documents
     "<|bos|>",
+    # End of Sequence (EOS) token marks the end of a document
+    "<|eos|>",
     # tokens below are only used during finetuning to render Conversations into token ids
     "<|user_start|>",  # user messages
     "<|user_end|>",
@@ -37,11 +39,12 @@ except ImportError:
 
 
 class RustBPETokenizer:
-    def __init__(self, enc, bos_token="<|bos|>"):
+    def __init__(self, enc, bos_token="<|bos|>", eos_token="<|eos|>"):
         if not RUSTBPE_AVAILABLE:
             raise ImportError("rustbpe and tiktoken not available. Install with: pip install rustbpe tiktoken")
         self.enc = enc
         self.bos_token_id = self.encode_special(bos_token)
+        self.eos_token_id = self.encode_special(eos_token)
 
     @classmethod
     def train_from_iterator(cls, text_iterator, vocab_size):
@@ -102,6 +105,9 @@ class RustBPETokenizer:
 
     def get_bos_token_id(self):
         return self.bos_token_id
+    
+    def get_eos_token_id(self):
+        return self.eos_token_id
 
     def encode(self, text, prepend=None, append=None, num_threads=8, add_special_tokens=False):
         # For backward compatibility, if add_special_tokens is True, prepend BOS
@@ -136,12 +142,9 @@ class RustBPETokenizer:
         return self.encode(*args, **kwargs)
 
     def decode(self, ids, skip_special_tokens=False):
+        # Tiktoken already handles special tokens correctly
+        # Manual replacement is redundant and can cause issues
         text = self.enc.decode(ids)
-        
-        if skip_special_tokens:
-            for special_token in SPECIAL_TOKENS:
-                text = text.replace(special_token, '')
-        
         return text
 
     def save(self, tokenizer_dir):
