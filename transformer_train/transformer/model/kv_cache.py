@@ -2,13 +2,22 @@ import torch
 
 class KVCache:
     def __init__(self, batch_size, num_heads, seq_len, head_dim, num_layers):
-        # Each of K/V is of shape (B, H, T, D) and we have one per layer of the Transformer.
-        self.kv_shape = (num_layers, 2, batch_size, num_heads, seq_len, head_dim)
+        """
+        FA3-native KV Cache format: (B, T, H, D)
+        This avoids transpose operations when using Flash Attention 3.
+        """
+        # FA3-native format: (num_layers, 2, batch_size, seq_len, num_heads, head_dim)
+        self.kv_shape = (num_layers, 2, batch_size, seq_len, num_heads, head_dim)
         self.kv_cache = None
+        self.cache_seqlens = None  # FA3 requires int32 tensor for position tracking
         self.pos = 0  # current position in time in the cache
+        self.batch_size = batch_size
+        self.num_layers = num_layers
 
     def reset(self):
         self.pos = 0
+        if self.cache_seqlens is not None:
+            self.cache_seqlens.zero_()
 
     def get_pos(self):
         return self.pos
@@ -36,36 +45,31 @@ class KVCache:
         # 4) update the pos
         self.pos = other.pos
 
-    def insert_kv(self, layer_idx, k, v):
-        # Lazy initialize the cache here because we need to know the dtype/device
+    def get_layer_cache(self, layer_idx):
+        """
+        Get k_cache and v_cache for a specific layer (FA3-native format).
+        Returns: (k_cache, v_cache) both of shape (B, T_max, H, D)
+        """
         if self.kv_cache is None:
-            self.kv_cache = torch.empty(self.kv_shape, dtype=k.dtype, device=k.device)
-        
-        # Insert new keys/values to the cache and return the full cache so far
-        B, H, T_add, D = k.size()
-        t0, t1 = self.pos, self.pos + T_add
-        
-        # Dynamically grow the cache if needed
-        if t1 > self.kv_cache.size(4):
-            t_needed = t1 + 1024  # as much as we need plus buffer of 1024
-            t_needed = (t_needed + 1023) & ~1023  # then round up to the nearest multiple of 1024
-            additional_shape = list(self.kv_cache.shape)
-            additional_shape[4] = t_needed - self.kv_cache.size(4)
-            additional_cache = torch.empty(additional_shape, dtype=k.dtype, device=k.device)
-            self.kv_cache = torch.cat([self.kv_cache, additional_cache], dim=4).contiguous()
-            self.kv_shape = self.kv_cache.shape
-        
-        # Insert k, v into the cache
-        self.kv_cache[layer_idx, 0, :, :, t0:t1] = k
-        self.kv_cache[layer_idx, 1, :, :, t0:t1] = v
-        
-        # Return the full cached keys/values up to current position (as a view)
-        key_view = self.kv_cache[layer_idx, 0, :, :, :t1]
-        value_view = self.kv_cache[layer_idx, 1, :, :, :t1]
-        
-        # Increment pos after the last layer of the Transformer processes
-        if layer_idx == self.kv_cache.size(0) - 1:
-            self.pos = t1
-        
-        return key_view, value_view
+            return None, None
+        return self.kv_cache[layer_idx, 0], self.kv_cache[layer_idx, 1]
+
+    def advance(self, T_new):
+        """
+        Advance the cache position by T_new tokens.
+        Called after the last layer processes the tokens.
+        """
+        self.pos += T_new
+        if self.cache_seqlens is not None:
+            self.cache_seqlens.fill_(self.pos)
+
+    def init_cache(self, dtype, device):
+        """
+        Initialize the cache tensors on first use.
+        FA3-native format: (B, T_max, H, D)
+        """
+        if self.kv_cache is None:
+            self.kv_cache = torch.empty(self.kv_shape, dtype=dtype, device=device)
+            # FA3 requires int32 tensor for cache position tracking
+            self.cache_seqlens = torch.zeros(self.batch_size, dtype=torch.int32, device=device)
 

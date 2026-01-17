@@ -64,7 +64,11 @@ class CausalSelfAttention(nn.Module):
             # Training: causal attention with optional sliding window
             y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
         else:
-            # Inference: use flash_attn_with_kvcache which handles cache management
+            # Inference: use flash_attn_with_kvcache (FA3-native format)
+            # Initialize cache on first use
+            if kv_cache.kv_cache is None:
+                kv_cache.init_cache(k.dtype, k.device)
+            
             k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
             y = flash_attn.flash_attn_with_kvcache(
                 q, k_cache, v_cache,
@@ -74,7 +78,7 @@ class CausalSelfAttention(nn.Module):
                 window_size=window_size,
             )
             # Advance position after last layer processes
-            if self.layer_idx == kv_cache.n_layers - 1:
+            if self.layer_idx == kv_cache.num_layers - 1:
                 kv_cache.advance(T)
 
         # Re-assemble the heads and project back to residual stream

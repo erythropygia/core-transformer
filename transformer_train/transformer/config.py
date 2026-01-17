@@ -1,63 +1,53 @@
 MODEL_CONFIG = {
-    'n_embd': 896,          # 768 embedding dimension
-    'n_layer': 18,          # 14 transformer layer (~120M parameters)
-    'n_head': 14,           # 12 attention head (768 ÷ 12 = 64 head_dim)
-    'n_kv_head': 7,        # number of key/value heads (GQA: can be less than n_head for efficiency)
-    'block_size': 1024,     # 1024 context window
-    'vocab_size': None,     # tokenizer'dan alınacak
+    'n_embd': 1280,         # embedding dimension (1280 for ~700M params)
+    'n_layer': 32,          # transformer layers (32 deep)
+    'n_head': 20,           # attention heads (1280 ÷ 20 = 64 head_dim)
+    'n_kv_head': 10,        # GQA: 10 key/value heads (2x compression)
+    'block_size': 1024,     # context window (optimal for Turkish)
+    'vocab_size': None,     # will be set from tokenizer
+    'window_pattern': 'L',  # sliding window: L=full context, S=half, "SSL"=pattern
 }
 
 TRAINING_CONFIG = {
     # Training stage: 'base' (pretraining), 'mid' (mid-training), 'sft' (chat fine-tuning)
     'training_stage': 'base',
     
-    'batch_size': 8,       
-    'learning_rate': 6e-4,  # Used if use_muon_optimizer is False
-    'weight_decay': 0.08,   
-    'beta1': 0.9,
-    'beta2': 0.95,
-    'grad_clip': 0.6,
-    'warmup_epochs': 0.2,  # Warmup for 0.05 epoch (~3,800 steps) - appropriate for 140M model
-    'max_epochs': 20,       # 20 epochs = 100B tokens total (full dataset sweep)
-    'eval_interval': 1,     # Full evaluation every epoch     
-    'save_interval': 5,     
-    'accumulation_steps': 8,  
-    'use_wandb': True,
-    'eval_generation_samples': 3, 
-    'max_eval_batches': 25,
+    # Batch configuration (RTX 3090 24GB optimized)
+    'batch_size': 8,                # 8 sequences per batch
+    'accumulation_steps': 8,        # Effective batch = 64 (8 * 8)
+    'grad_clip': 1.0,               # Gradient clipping
     
-    # Muon optimizer settings
-    'use_muon_optimizer': True,  # Use Muon + AdamW with separate learning rates
-    'unembedding_lr': 0.002,  # Learning rate for lm_head (slightly increased for better learning)
-    'embedding_lr': 0.03,  # Learning rate for token embeddings (balanced for 140M model)
-    'matrix_lr': 0.010,  # Learning rate for transformer matrix parameters (Muon) (balanced for 140M model) 
+    # Muon + AdamW optimizer (nanochat-compatible)
+    'use_muon_optimizer': True,
+    'unembedding_lr': 0.004,        # lm_head learning rate
+    'embedding_lr': 0.2,            # token embedding learning rate
+    'matrix_lr': 0.02,              # transformer matrix (Muon) learning rate
+    'scalar_lr': 0.5,               # resid_lambdas & x0_lambdas learning rate
+    'weight_decay': 0.0,            # weight decay (only for Muon, not AdamW)
+    'adam_betas': (0.8, 0.95),      # AdamW betas (nanochat default)
     
-    'use_mixed_precision': True, 
-    'dataloader_num_workers': 2, 
-    'pin_memory': True,         
-    'prefetch_factor': 2,        
-
-    # Token accounting (streaming datasets)
-    # 1 epoch = 5B tokens (~5000 steps with batch_size=1, accumulation=16, block_size=1024)
-    # This makes epochs more manageable for tracking progress
-    'tokens_per_epoch': 2_500_000_000,  # 5B tokens per epoch
+    # Training schedule
+    'max_epochs': 20,               # 20 epochs through dataset
+    'warmup_epochs': 0.2,           # Warmup for 0.2 epochs
+    'tokens_per_epoch': 2_500_000_000,  # 2.5B tokens per epoch
     
-    # Progress reporting
-    'log_interval': 50,     # Log every 50 steps
-    'eval_steps': 2000,     # Evaluate + generate samples every 1000 steps
-    'checkpoint_steps': 2000,  # Save checkpoint every 500 steps  
+    # Mixed precision
+    'use_mixed_precision': True,    # bfloat16 training
     
-    # Data shuffling for better training
-    'shuffle_parquet_files': True,  # Shuffle parquet file order each epoch
-    'shuffle_seed': 42,  # Seed for reproducibility (None = random each run)
-    'reshuffle_each_epoch': True,  # Re-shuffle parquet order every epoch
+    # Logging and evaluation
+    'log_interval': 50,             # Log every 50 steps
+    'eval_steps': 2000,             # Evaluate every 2000 steps
+    'checkpoint_steps': 2000,       # Save checkpoint every 2000 steps
+    'use_wandb': True,              # Weights & Biases logging
+    
+    # Data configuration
+    'shuffle_parquet_files': True,
+    'shuffle_seed': 42,
+    'reshuffle_each_epoch': True,
     
     # Early stopping
-    'early_stopping_patience': 8,  
+    'early_stopping_patience': 8,
     'early_stopping_min_delta': 0.001,
-    
-    'vocab_size': 32000,
-    'max_data_samples': 150000,
 }
 
 TEST_PROMPTS = [
@@ -81,12 +71,10 @@ TRAINING_STAGE_DATASET_MAP = {
 # Base Training (Pretraining) Dataset Config
 # Kullanım: training_stage='base' olduğunda bu config kullanılır
 BASE_DATASET_CONFIG = {
-    'type': 'parquet',  # Parquet files from lumees/turkish-corpus-100b
-    'data_dir': 'dataset/base_data',  # Directory containing parquet files
-    'text_column': 'text',  # Column name in parquet files
-    'max_samples': None,  # None = use all
-    'tokens_per_epoch': 5_000_000_000,  # 5B tokens per epoch (manageable size for progress tracking)
-    # Note: Full dataset is ~100B tokens, so ~20 epochs to see all data
+    'type': 'parquet',
+    'data_dir': 'dataset/base_data',
+    'text_column': 'text',
+    # Note: Full dataset ~100B tokens, tokens_per_epoch from TRAINING_CONFIG
 }
 
 # Mid Training Dataset Config (Structured tasks)
@@ -144,7 +132,6 @@ SFT_DATASET_CONFIG = {
 VALID_TRAINING_STAGES = ['base', 'mid', 'sft']
 
 def validate_config():
-    """Validate training configuration at startup"""
     stage = TRAINING_CONFIG.get('training_stage', 'base')
     
     # Validate training stage
@@ -166,4 +153,4 @@ def validate_config():
             f"Dataset config not found: {dataset_config_name}"
         )
     
-    print(f"✓ Config validation passed: training_stage='{stage}', dataset_config='{dataset_config_name}'")
+    print(f"Config validation passed: training_stage='{stage}', dataset_config='{dataset_config_name}'")
