@@ -44,10 +44,20 @@ def test_tokenizer(tokenizer_dir=None):
     bos_token_id = tokenizer.get_bos_token_id()
     special_tokens = tokenizer.get_special_tokens()
     
+    # Try to get EOS token ID
+    try:
+        eos_token_id = tokenizer.encode_special("<|eos|>")
+    except:
+        try:
+            eos_token_id = tokenizer.encode_special("<eos>")
+        except:
+            eos_token_id = None
+    
     print(f"Tokenizer Information:")
     print(f"   Vocabulary size: {vocab_size:,}")
-    print(f"   BOS token ID: {bos_token_id}")
-    print(f"   BOS token: {tokenizer.decode([bos_token_id])}")
+    print(f"   BOS token ID: {bos_token_id} -> {tokenizer.decode([bos_token_id], skip_special_tokens=False)}")
+    if eos_token_id is not None:
+        print(f"   EOS token ID: {eos_token_id} -> {tokenizer.decode([eos_token_id], skip_special_tokens=False)}")
     print(f"   Special tokens count: {len(special_tokens)}")
     print()
     
@@ -120,15 +130,127 @@ def test_tokenizer(tokenizer_dir=None):
     tokens_without_bos = tokenizer.encode(test_text, add_special_tokens=False)
     
     print(f"   Text: {test_text}")
-    print(f"   Without BOS: {len(tokens_without_bos)} tokens")
-    print(f"   With BOS: {len(tokens_with_bos)} tokens")
+    print(f"   Without BOS: {len(tokens_without_bos)} tokens -> {tokens_without_bos[:5]}...")
+    print(f"   With BOS: {len(tokens_with_bos)} tokens -> {tokens_with_bos[:6]}...")
     print(f"   First token ID: {tokens_with_bos[0]} (should be BOS: {bos_token_id})")
     
+    # Decode with and without special tokens
+    decoded_with_special = tokenizer.decode(tokens_with_bos, skip_special_tokens=False)
+    decoded_without_special = tokenizer.decode(tokens_with_bos, skip_special_tokens=True)
+    
+    print(f"   Decoded (with special): {decoded_with_special}")
+    print(f"   Decoded (skip special): {decoded_without_special}")
+    
     if tokens_with_bos[0] == bos_token_id:
-        print("BOS token correctly prepended")
+        print(f"   ✅ BOS token correctly prepended")
     else:
-        print("BOS token not correctly prepended")
+        print(f"   ❌ BOS token not correctly prepended")
         all_passed = False
+    
+    if test_text == decoded_without_special:
+        print(f"   ✅ Skip special tokens works correctly")
+    else:
+        print(f"   ❌ Skip special tokens failed")
+        all_passed = False
+    print()
+    
+    # EOS token test
+    print("EOS Token Test:")
+    print("-" * 40)
+    if eos_token_id is not None:
+        test_text_eos = "Bu bir test metnidir."
+        tokens_without_eos = tokenizer.encode(test_text_eos, add_special_tokens=False)
+        
+        # Manually append EOS
+        if isinstance(tokens_without_eos, list) and not isinstance(tokens_without_eos[0], list):
+            tokens_with_eos = tokens_without_eos + [eos_token_id]
+        else:
+            tokens_with_eos = (tokens_without_eos[0] if isinstance(tokens_without_eos[0], list) else tokens_without_eos) + [eos_token_id]
+        
+        print(f"   Text: {test_text_eos}")
+        print(f"   Without EOS: {len(tokens_without_eos)} tokens -> ...{tokens_without_eos[-3:]}")
+        print(f"   With EOS: {len(tokens_with_eos)} tokens -> ...{tokens_with_eos[-4:]}")
+        print(f"   Last token ID: {tokens_with_eos[-1]} (should be EOS: {eos_token_id})")
+        
+        # Decode with and without special tokens
+        decoded_with_special = tokenizer.decode(tokens_with_eos, skip_special_tokens=False)
+        decoded_without_special = tokenizer.decode(tokens_with_eos, skip_special_tokens=True)
+        
+        print(f"   Decoded (with special): {decoded_with_special}")
+        print(f"   Decoded (skip special): {decoded_without_special}")
+        
+        if tokens_with_eos[-1] == eos_token_id:
+            print(f"   ✅ EOS token correctly appended")
+        else:
+            print(f"   ❌ EOS token not correctly appended")
+            all_passed = False
+        
+        if test_text_eos == decoded_without_special:
+            print(f"   ✅ Skip special tokens works correctly")
+        else:
+            print(f"   ❌ Skip special tokens failed")
+            all_passed = False
+    else:
+        print(f"   ⚠️  EOS token not found in tokenizer")
+    print()
+    
+    # BOS + EOS combined test (Generation simulation)
+    print("BOS + EOS Combined Test (Generation Simulation):")
+    print("-" * 40)
+    if eos_token_id is not None:
+        test_text_gen = "Türkiye'nin başkenti Ankara'dır."
+        
+        # Simulate generation: BOS + text + EOS
+        tokens_content = tokenizer.encode(test_text_gen, add_special_tokens=False)
+        if isinstance(tokens_content, list) and isinstance(tokens_content[0], list):
+            tokens_content = tokens_content[0]
+        
+        tokens_full_sequence = [bos_token_id] + tokens_content + [eos_token_id]
+        
+        print(f"   Generated text: {test_text_gen}")
+        print(f"   Full sequence length: {len(tokens_full_sequence)} tokens")
+        print(f"   Token IDs: [{tokens_full_sequence[0]}, {tokens_full_sequence[1]}, ..., {tokens_full_sequence[-2]}, {tokens_full_sequence[-1]}]")
+        print(f"   First token (BOS): {tokens_full_sequence[0]} == {bos_token_id}")
+        print(f"   Last token (EOS): {tokens_full_sequence[-1]} == {eos_token_id}")
+        
+        # Decode with special tokens visible
+        decoded_with_special = tokenizer.decode(tokens_full_sequence, skip_special_tokens=False)
+        decoded_without_special = tokenizer.decode(tokens_full_sequence, skip_special_tokens=True)
+        
+        print(f"\n   Decoded (SHOW_SPECIAL_TOKENS=True):")
+        print(f"      {decoded_with_special}")
+        print(f"\n   Decoded (SHOW_SPECIAL_TOKENS=False):")
+        print(f"      {decoded_without_special}")
+        
+        # Verify
+        has_bos = tokens_full_sequence[0] == bos_token_id
+        has_eos = tokens_full_sequence[-1] == eos_token_id
+        clean_text_matches = test_text_gen == decoded_without_special
+        
+        if has_bos and has_eos:
+            print(f"   ✅ BOS and EOS tokens correctly placed")
+        else:
+            print(f"   ❌ BOS/EOS tokens placement failed")
+            all_passed = False
+        
+        if clean_text_matches:
+            print(f"   ✅ Clean text extraction works (skip_special_tokens=True)")
+        else:
+            print(f"   ❌ Clean text extraction failed")
+            print(f"      Expected: {test_text_gen}")
+            print(f"      Got: {decoded_without_special}")
+            all_passed = False
+        
+        # Check if special tokens are visible in decoded_with_special
+        bos_token_str = tokenizer.decode([bos_token_id], skip_special_tokens=False)
+        eos_token_str = tokenizer.decode([eos_token_id], skip_special_tokens=False)
+        
+        if bos_token_str in decoded_with_special or decoded_with_special.startswith(test_text_gen):
+            print(f"   ✅ Special tokens visible when skip_special_tokens=False")
+        else:
+            print(f"   ⚠️  Special tokens may not be visible (check tokenizer decode behavior)")
+    else:
+        print(f"   ⚠️  Cannot test: EOS token not found")
     print()
     
     # Batch encoding test
