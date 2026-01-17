@@ -10,7 +10,7 @@ from contextlib import redirect_stdout, redirect_stderr
 
 from ..utils import EarlyStopping, cleanup_memory, evaluate_model_comprehensive, get_cosine_schedule_with_warmup, get_gpu_memory_info, get_memory_usage, get_memory_usage_safe
 from ..config import (
-    MODEL_CONFIG, TRAINING_CONFIG, TEST_PROMPTS, 
+    MODEL_CONFIG, TRAINING_CONFIG, TEST_PROMPTS, SHOW_SPECIAL_TOKENS,
     BASE_DATASET_CONFIG, MID_DATASET_CONFIG, SFT_DATASET_CONFIG,
     TRAINING_STAGE_DATASET_MAP, validate_config
 )
@@ -730,10 +730,11 @@ def train(
                                             prompt,
                                             max_new_tokens=50,
                                             temperature=0.8,
-                                            top_k=40
+                                            top_k=40,
+                                            skip_special_tokens=not SHOW_SPECIAL_TOKENS
                                         )
                                     print(f"    [{test_idx+1}] Prompt: {prompt}")
-                                    print(f"        Output: {generated[:100]}{'...' if len(generated) > 100 else ''}")
+                                    print(f"        Output: {generated[:200]}{'...' if len(generated) > 200 else ''}")
                             except Exception as e:
                                 print(f"    [{test_idx+1}] Generation failed: {e}")
                         
@@ -926,10 +927,11 @@ def train(
                                         prompt,
                                         max_new_tokens=50,
                                         temperature=0.8,
-                                        top_k=40
+                                        top_k=40,
+                                        skip_special_tokens=not SHOW_SPECIAL_TOKENS
                                     )
                                 print(f"    [{test_idx+1}] Prompt: {prompt}")
-                                print(f"        Output: {generated[:100]}{'...' if len(generated) > 100 else ''}")
+                                print(f"        Output: {generated[:200]}{'...' if len(generated) > 200 else ''}")
                         except Exception as e:
                             print(f"    [{test_idx+1}] Generation failed: {e}")
                     

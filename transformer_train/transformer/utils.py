@@ -132,6 +132,9 @@ def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_
     
     for prompt in test_prompts:
         try:
+            # Import config for SHOW_SPECIAL_TOKENS
+            from .config import SHOW_SPECIAL_TOKENS
+            
             with torch.amp.autocast(
                 device_type=device_type,
                 dtype=autocast_dtype,
@@ -142,7 +145,8 @@ def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_
                     max_new_tokens=max_new_tokens,
                     temperature=0.8,
                     top_p=0.9,
-                    top_k=50
+                    top_k=50,
+                    skip_special_tokens=not SHOW_SPECIAL_TOKENS  # Show special tokens if config enabled
                 )
             
             # Extract generated part
@@ -150,7 +154,7 @@ def evaluate_generation_quality(model, tokenizer, test_prompts, device, max_new_
             full_tokens = tokenizer.encode(generated, add_special_tokens=False)
             if len(full_tokens) > len(prompt_tokens):
                 generated_tokens = full_tokens[len(prompt_tokens):]
-                generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=not SHOW_SPECIAL_TOKENS)
             else:
                 generated_text = generated
             

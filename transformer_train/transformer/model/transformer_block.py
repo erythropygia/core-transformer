@@ -365,7 +365,7 @@ class Transformer(nn.Module):
         
         return idx
     
-    def generate_from_prompt(self, prompt, max_new_tokens=100, temperature=1.0, top_k=None, top_p=0.9):
+    def generate_from_prompt(self, prompt, max_new_tokens=100, temperature=1.0, top_k=None, top_p=0.9, skip_special_tokens=True):
         self.eval()
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for generate_from_prompt")
@@ -377,4 +377,4 @@ class Transformer(nn.Module):
         device = self.get_device()
         context = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
         generated = self.generate(context, max_new_tokens=max_new_tokens, temperature=temperature, top_k=top_k, top_p=top_p)
-        return self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
+        return self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=skip_special_tokens)

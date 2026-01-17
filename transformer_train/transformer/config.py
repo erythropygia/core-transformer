@@ -56,6 +56,9 @@ TEST_PROMPTS = [
     "İstanbul Boğazı"
 ]
 
+# Show special tokens in generation outputs (for debugging)
+SHOW_SPECIAL_TOKENS = True  # Set to False to hide <bos>, <eos> tokens
+
 # -----------------------------------------------------------------------------
 # Dataset Configurations
 # -----------------------------------------------------------------------------
