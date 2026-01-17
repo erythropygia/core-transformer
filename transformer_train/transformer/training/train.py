@@ -14,7 +14,7 @@ from ..config import (
     BASE_DATASET_CONFIG, MID_DATASET_CONFIG, SFT_DATASET_CONFIG,
     TRAINING_STAGE_DATASET_MAP, validate_config
 )
-from ..tokenizer import create_tokenizer
+from ..tokenizer import create_tokenizer, get_token_bytes
 from ..data.dataset import TransformerDataset, load_and_preprocess_data
 from ..data.sft_dataset import SFTDataset
 from ..data.dataloader import tokenizing_distributed_data_loader_with_state, tokenizing_distributed_data_loader
@@ -345,6 +345,12 @@ def train(
         model = torch.compile(model, dynamic=False)
         print("Model compiled successfully!")
     
+    # Precompute token bytes for BPB (bits per byte) calculation
+    print("\nPrecomputing token bytes for BPB calculation...")
+    token_bytes = get_token_bytes(tokenizer, device=device)
+    avg_bytes_per_token = token_bytes[token_bytes > 0].float().mean().item()
+    print(f"Average bytes per token: {avg_bytes_per_token:.2f}")
+    
     print(f"\nUsing standard PyTorch training...")
     
     # Use Muon optimizer if enabled, otherwise use standard AdamW
@@ -587,6 +593,7 @@ def train(
                 if batch_idx % 10 == 0:  # Update progress bar less frequently for streaming
                     postfix_dict = {
                         'loss': f"{batch_loss:.4f}",
+                        'bpb': f"{batch_bpb:.4f}",
                         'lr': f"{current_lr:.2e}",
                         'mem': get_memory_usage_safe(),
                         'epoch': epoch + 1,  # Show current epoch
@@ -653,6 +660,7 @@ def train(
                     if global_step % TRAINING_CONFIG['log_interval'] == 0 and use_wandb:
                         log_dict = {
                             'train_loss_step': batch_loss,
+                            'train_bpb_step': batch_bpb,
                             'learning_rate': current_lr,
                             'global_step': global_step,
                             'iteration': iteration,
@@ -957,7 +965,8 @@ def train(
                 torch.cuda.empty_cache()
         
         avg_train_loss = total_train_loss / num_train_batches
-        print(f"\nEpoch {epoch + 1} completed: Train Loss: {avg_train_loss:.4f}")
+        avg_train_bpb = avg_train_loss * 0.69314718056 / avg_bytes_per_token
+        print(f"\nEpoch {epoch + 1} completed: Train Loss: {avg_train_loss:.4f}, BPB: {avg_train_bpb:.4f}")
         
         # Show streaming parquet progress
         if use_parquet_streaming and dataloader_state_dict is not None:
@@ -981,10 +990,11 @@ def train(
             
             val_loss = metrics['val_loss']
             perplexity = metrics['perplexity']
+            val_bpb = val_loss * 0.69314718056 / avg_bytes_per_token
             
             print(f"METRICS:")
-            print(f"   Train Loss: {avg_train_loss:.4f}")
-            print(f"   Val Loss: {val_loss:.4f}")
+            print(f"   Train Loss: {avg_train_loss:.4f}, BPB: {avg_train_bpb:.4f}")
+            print(f"   Val Loss: {val_loss:.4f}, BPB: {val_bpb:.4f}")
             print(f"   Perplexity: {perplexity:.2f}")
             print(f"   Learning Rate: {current_lr:.2e}")
             print(f"   Memory: {get_memory_usage()}")
@@ -1001,7 +1011,9 @@ def train(
                 wandb.log({
                     'epoch': epoch + 1,
                     'train_loss_epoch': avg_train_loss,
+                    'train_bpb_epoch': avg_train_bpb,
                     'val_loss_epoch': val_loss,
+                    'val_bpb_epoch': val_bpb,
                     'perplexity': perplexity,
                     'learning_rate_epoch': current_lr,
                     'global_step': global_step
