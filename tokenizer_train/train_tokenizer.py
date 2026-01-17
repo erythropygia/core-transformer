@@ -6,14 +6,14 @@ import torch
 from pathlib import Path
 
 """
-python3 tokenizer_train/train_tokenizer.py \
-  --data_dir dataset/base_data \
-  --text_column text \
-  --vocab_size 65536 \
-  --doc_cap 100000 \
-  --max_chars 50000000000 \
-  --output_dir tokenizer \
-  --progress
+python3 tokenizer_train/train_tokenizer.py
+--data_dir dataset/base_data
+--text_column text
+--vocab_size 65536
+--doc_cap 100000
+--max_chars 50000000000
+--output_dir tokenizer
+--progress
 """
 
 # Add parent directory to path so we can import transformer_train
