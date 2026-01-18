@@ -143,9 +143,13 @@ class RustBPETokenizer:
         return self.encode(*args, **kwargs)
 
     def decode(self, ids, skip_special_tokens=False):
-        # Tiktoken already handles special tokens correctly
-        # Manual replacement is redundant and can cause issues
         text = self.enc.decode(ids)
+        
+        # Remove special tokens if requested
+        if skip_special_tokens:
+            for special_token in SPECIAL_TOKENS:
+                text = text.replace(special_token, "")
+        
         return text
 
     def save(self, tokenizer_dir):
