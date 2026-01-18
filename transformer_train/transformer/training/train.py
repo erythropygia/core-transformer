@@ -368,8 +368,7 @@ def train(
             embedding_lr=TRAINING_CONFIG.get('embedding_lr', 0.2) * dmodel_lr_scale,
             matrix_lr=TRAINING_CONFIG.get('matrix_lr', 0.02) * dmodel_lr_scale,
             weight_decay=TRAINING_CONFIG.get('weight_decay', 0.0),
-            beta1=TRAINING_CONFIG.get('beta1', 0.9),
-            beta2=TRAINING_CONFIG.get('beta2', 0.95)
+            adam_betas=(TRAINING_CONFIG.get('beta1', 0.9), TRAINING_CONFIG.get('beta2', 0.95))
         )
         print(f"  LR scale factor (based on d_model={MODEL_CONFIG['n_embd']}): {dmodel_lr_scale:.4f}")
         # For compatibility, we'll use the first optimizer (AdamW) for scheduler
@@ -748,7 +747,7 @@ def train(
                                             max_new_tokens=50,
                                             temperature=0.8,
                                             top_k=40,
-                                            skip_special_tokens=not SHOW_SPECIAL_TOKENS
+                                            skip_special_tokens=(not SHOW_SPECIAL_TOKENS)
                                         )
                                     print(f"    [{test_idx+1}] Prompt: {prompt}")
                                     print(f"        Output: {generated[:200]}{'...' if len(generated) > 200 else ''}")
@@ -984,7 +983,7 @@ def train(
                                         max_new_tokens=50,
                                         temperature=0.8,
                                         top_k=40,
-                                        skip_special_tokens=not SHOW_SPECIAL_TOKENS
+                                        skip_special_tokens=(not SHOW_SPECIAL_TOKENS)
                                     )
                                 print(f"    [{test_idx+1}] Prompt: {prompt}")
                                 print(f"        Output: {generated[:200]}{'...' if len(generated) > 200 else ''}")

@@ -13,8 +13,8 @@ TRAINING_CONFIG = {
     'training_stage': 'base',
     
     # Batch configuration (RTX 3090 24GB optimized)
-    'batch_size': 8,                # 8 sequences per batch
-    'accumulation_steps': 8,        # Effective batch = 64 (8 * 8)
+    'batch_size': 4,                # 8 sequences per batch
+    'accumulation_steps': 16,        # Effective batch = 64 (8 * 8)
     'grad_clip': 1.0,               # Gradient clipping
     
     # Muon + AdamW optimizer (nanochat-compatible)
@@ -36,8 +36,8 @@ TRAINING_CONFIG = {
     
     # Logging and evaluation
     'log_interval': 50,             # Log every 50 steps
-    'eval_steps': 2000,             # Evaluate every 2000 steps
-    'checkpoint_steps': 2000,       # Save checkpoint every 2000 steps
+    'eval_steps': 100,             # Evaluate every 2000 steps
+    'checkpoint_steps': 200,       # Save checkpoint every 2000 steps
     'use_wandb': True,              # Weights & Biases logging
     
     # Data configuration

@@ -241,7 +241,7 @@ class Transformer(nn.Module):
     def get_device(self):
         return self.wte.weight.device
     
-    def setup_optimizers(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.8, 0.95), scalar_lr=0.5):
+    def setup_optimizers(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.9, 0.95), scalar_lr=0.5):
         model_dim = self.config['n_embd']
         ddp, rank, local_rank, world_size = get_dist_info()
         
@@ -382,7 +382,8 @@ class Transformer(nn.Module):
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for generate_from_prompt")
         
-        tokens = self.tokenizer.encode(prompt, add_special_tokens=False)
+        # Encode with BOS token (important for context understanding)
+        tokens = self.tokenizer.encode(prompt, prepend=self.tokenizer.get_bos_token_id())
         if isinstance(tokens[0], list):  # Handle batch encoding
             tokens = tokens[0]
         
