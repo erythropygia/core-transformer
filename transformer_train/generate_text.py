@@ -113,8 +113,8 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
     except:
         pass
     
-    # Encode prompt
-    prompt_tokens = tokenizer.encode(prompt)
+    # Encode prompt with BOS token (consistent with training)
+    prompt_tokens = tokenizer.encode(prompt, prepend=tokenizer.get_bos_token_id())
     if isinstance(prompt_tokens, list) and len(prompt_tokens) > 0 and isinstance(prompt_tokens[0], list):
         prompt_tokens = prompt_tokens[0]
     
@@ -146,8 +146,15 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
             
             response_tokens.append(token)
     
-    # Decode only the generated part (respect SHOW_SPECIAL_TOKENS config)
-    generated_text = tokenizer.decode(response_tokens, skip_special_tokens=not SHOW_SPECIAL_TOKENS)
+    # Decode full sequence (prompt + generated) to show BOS token
+    # This matches training behavior where full sequences are shown
+    full_sequence = prompt_tokens + response_tokens
+    if SHOW_SPECIAL_TOKENS:
+        # Show full sequence with special tokens (BOS will be visible)
+        generated_text = tokenizer.decode(full_sequence, skip_special_tokens=False)
+    else:
+        # Show full sequence but skip special tokens
+        generated_text = tokenizer.decode(full_sequence, skip_special_tokens=True)
     
     return generated_text
 
@@ -314,7 +321,7 @@ def main():
         )
     else:
         print(f"\nPrompt: {args.prompt}")
-        print("Generated:", end=" ")
+        print("Full Output (with BOS):", end=" ")
         try:
             generated = generate_single(
                 model, tokenizer, args.prompt,
