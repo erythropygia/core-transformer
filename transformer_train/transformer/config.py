@@ -1,9 +1,9 @@
 MODEL_CONFIG = {
-    'n_embd': 1280,         # embedding dimension (1280 for ~700M params)
-    'n_layer': 32,          # transformer layers (32 deep)
-    'n_head': 20,           # attention heads (1280 ÷ 20 = 64 head_dim)
-    'n_kv_head': 10,        # GQA: 10 key/value heads (2x compression)
-    'block_size': 1024,     # context window (optimal for Turkish)
+    'n_embd': 768,          # 768 embedding dimension
+    'n_layer': 14,          # 14 transformer layer (~120M parameters)
+    'n_head': 12,           # 12 attention head (768 ÷ 12 = 64 head_dim)
+    'n_kv_head': 12,        # number of key/value heads (GQA: can be less than n_head for efficiency)
+    'block_size': 1024,     # 1024 context window
     'vocab_size': None,     # will be set from tokenizer
     'window_pattern': 'L',  # sliding window: L=full context, S=half, "SSL"=pattern
 }
@@ -13,8 +13,8 @@ TRAINING_CONFIG = {
     'training_stage': 'base',
     
     # Batch configuration (RTX 3090 24GB optimized)
-    'batch_size': 4,                # 8 sequences per batch
-    'accumulation_steps': 16,        # Effective batch = 64 (8 * 8)
+    'batch_size': 16,                # 8 sequences per batch
+    'accumulation_steps': 4,        # Effective batch = 64 (8 * 8)
     'grad_clip': 1.0,               # Gradient clipping
     
     # Muon + AdamW optimizer (nanochat-compatible)
@@ -36,8 +36,8 @@ TRAINING_CONFIG = {
     
     # Logging and evaluation
     'log_interval': 50,             # Log every 50 steps
-    'eval_steps': 100,             # Evaluate every 2000 steps
-    'checkpoint_steps': 200,       # Save checkpoint every 2000 steps
+    'eval_steps': 2000,             # Evaluate every 2000 steps
+    'checkpoint_steps': 2000,       # Save checkpoint every 2000 steps
     'use_wandb': True,              # Weights & Biases logging
     
     # Data configuration
