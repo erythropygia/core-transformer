@@ -27,22 +27,33 @@ class KVCache:
         assert self.kv_cache is None, "Cannot prefill a non-empty KV cache"
         assert other.kv_cache is not None, "Cannot prefill with a None KV cache"
         for ix, (dim1, dim2) in enumerate(zip(self.kv_shape, other.kv_shape)):
-            # ix 0: num_layers, 1: k/v, 2: batch_size, 3: num_heads, 4: seq_len, 5: head_dim
-            if ix in [0, 1, 3, 5]:
+            # ix 0: num_layers, 1: k/v, 2: batch_size, 3: seq_len, 4: num_heads, 5: head_dim
+            if ix in [0, 1, 4, 5]:
                 # num_layers, k/v, num_heads, head_dim must match
                 assert dim1 == dim2, f"Dim {ix} mismatch: {dim1} != {dim2}"
             elif ix == 2:
                 # batch_size can be expanded
                 assert dim1 == dim2 or dim2 == 1, f"Batch dim mismatch: {dim1} != {dim2}"
-            elif ix == 4:
+            elif ix == 3:
                 # seq_len: self must be longer than other
                 assert dim1 >= dim2, f"Seq len mismatch: {dim1} < {dim2}"
         # 2) initialize the cache
         dtype, device = other.kv_cache.dtype, other.kv_cache.device
         self.kv_cache = torch.empty(self.kv_shape, dtype=dtype, device=device)
         # 3) copy the data over
-        self.kv_cache[:, :, :, :, :other.pos, :] = other.kv_cache
-        # 4) update the pos
+        # Shape: (num_layers, 2, batch_size, seq_len, num_heads, head_dim)
+        # Copy only the filled portion (first other.pos tokens in seq_len dimension)
+        self.kv_cache[:, :, :, :other.pos, :, :] = other.kv_cache[:, :, :, :other.pos, :, :]
+        # 4) initialize cache_seqlens (required for FA3)
+        # Expand batch_size if needed (from 1 to num_samples)
+        if other.cache_seqlens is not None:
+            # Copy the value from other, but expand to new batch_size
+            pos_value = other.cache_seqlens[0].item() if other.cache_seqlens.numel() > 0 else other.pos
+            self.cache_seqlens = torch.full((self.batch_size,), pos_value, dtype=torch.int32, device=device)
+        else:
+            # Initialize with current position
+            self.cache_seqlens = torch.full((self.batch_size,), other.pos, dtype=torch.int32, device=device)
+        # 5) update the pos
         self.pos = other.pos
 
     def get_layer_cache(self, layer_idx):

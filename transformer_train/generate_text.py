@@ -24,6 +24,7 @@ from transformer_train.transformer.tokenizer import create_tokenizer
 from transformer_train.transformer.model.transformer_block import Transformer
 from transformer_train.transformer.model.engine import Engine
 from transformer_train.transformer.common import autodetect_device_type
+from transformer_train.transformer.config import SHOW_SPECIAL_TOKENS
 
 from safetensors import safe_open
 from safetensors.torch import load_file
@@ -59,7 +60,7 @@ def load_model(model_path, device_type="cuda", dtype="bfloat16"):
     if 'vocab_size' not in config or config['vocab_size'] is None:
         config['vocab_size'] = tokenizer.get_vocab_size()
     
-    # Create model (simple, like nanochat)
+    # Create model
     device = torch.device(device_type)
     model = Transformer(config, tokenizer).to(device)
     
@@ -87,7 +88,7 @@ def load_model(model_path, device_type="cuda", dtype="bfloat16"):
 
 
 def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, top_k=50, 
-                    device_type="cuda", dtype="bfloat16"):
+                    top_p=1.0, repetition_penalty=1.0, device_type="cuda", dtype="bfloat16"):
     device = torch.device(device_type)
     ptdtype = torch.bfloat16 if dtype == 'bfloat16' else torch.float32
     autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
@@ -112,7 +113,7 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
     except:
         pass
     
-    # Encode prompt (simple, like nanochat)
+    # Encode prompt
     prompt_tokens = tokenizer.encode(prompt)
     if isinstance(prompt_tokens, list) and len(prompt_tokens) > 0 and isinstance(prompt_tokens[0], list):
         prompt_tokens = prompt_tokens[0]
@@ -126,6 +127,8 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
             max_tokens=max_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
             seed=42
         ):
             token = token_column[0]  # Single sample
@@ -138,14 +141,14 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
             
             response_tokens.append(token)
     
-    # Decode only the generated part (skip special tokens like <|bos|>)
-    generated_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
+    # Decode only the generated part (respect SHOW_SPECIAL_TOKENS config)
+    generated_text = tokenizer.decode(response_tokens, skip_special_tokens=not SHOW_SPECIAL_TOKENS)
     
     return generated_text
 
 
 def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16", 
-                     temperature=0.6, top_k=50, max_tokens=256):
+                     temperature=0.6, top_k=50, top_p=1.0, repetition_penalty=1.0, max_tokens=256):
     device = torch.device(device_type)
     ptdtype = torch.bfloat16 if dtype == 'bfloat16' else torch.float32
     autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
@@ -225,6 +228,8 @@ def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16",
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
                 seed=42
             ):
                 token = token_column[0]
@@ -237,8 +242,8 @@ def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16",
                 
                 response_tokens.append(token)
                 
-                # Stream output (skip special tokens like <|bos|>)
-                token_text = tokenizer.decode([token], skip_special_tokens=True)
+                # Stream output (respect SHOW_SPECIAL_TOKENS config)
+                token_text = tokenizer.decode([token], skip_special_tokens=not SHOW_SPECIAL_TOKENS)
                 print(token_text, end="", flush=True)
         
         print()  # New line
@@ -259,6 +264,8 @@ def main():
                        help='Path to model checkpoint')
     parser.add_argument('-t', '--temperature', type=float, default=0.6, help='Sampling temperature')
     parser.add_argument('-k', '--top-k', type=int, default=50, help='Top-k sampling')
+    parser.add_argument('--top-p', type=float, default=1.0, help='Top-p (nucleus) sampling threshold (0.0-1.0)')
+    parser.add_argument('--repetition-penalty', type=float, default=1.0, help='Repetition penalty (>1.0 to penalize repetition)')
     parser.add_argument('--max-tokens', type=int, default=256, help='Maximum tokens to generate')
     parser.add_argument('--device-type', type=str, default='', choices=['cuda', 'cpu', 'mps'], 
                        help='Device type (empty = autodetect)')
@@ -296,6 +303,8 @@ def main():
             dtype=args.dtype,
             temperature=args.temperature,
             top_k=args.top_k,
+            top_p=args.top_p,
+            repetition_penalty=args.repetition_penalty,
             max_tokens=args.max_tokens
         )
     else:
@@ -307,6 +316,8 @@ def main():
                 max_tokens=args.max_tokens,
                 temperature=args.temperature,
                 top_k=args.top_k,
+                top_p=args.top_p,
+                repetition_penalty=args.repetition_penalty,
                 device_type=device_type,
                 dtype=args.dtype
             )

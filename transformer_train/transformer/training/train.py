@@ -31,6 +31,7 @@ except ImportError:
 try:
     from flash_attn import flash_attn_func
     FLASH_ATTENTION_AVAILABLE = True
+    print("Flash Attention is available.")
 except ImportError:
     FLASH_ATTENTION_AVAILABLE = False
 
@@ -39,7 +40,7 @@ def train(
     resume_from_checkpoint=None,
     auto_resume=False,
     use_wandb=True,
-    project_name="turkish-transformer-120m",
+    project_name="turkish-transformer-600m",
     pretrained_model_path=None,
     fresh_epochs=None
 ):

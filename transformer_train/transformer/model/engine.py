@@ -5,21 +5,68 @@ from .kv_cache import KVCache
 
 
 @torch.inference_mode()
-def sample_next_token(logits, rng, temperature=1.0, top_k=None):
+def sample_next_token(logits, rng, temperature=1.0, top_k=None, top_p=1.0, repetition_penalty=1.0, generated_tokens=None):
+    """
+    Sample next token from logits.
+    
+    Args:
+        logits: (batch_size, vocab_size) tensor of logits
+        rng: Random number generator
+        temperature: Sampling temperature (0.0 = greedy)
+        top_k: Top-k sampling (None = no limit)
+        top_p: Nucleus sampling threshold (1.0 = disabled)
+        repetition_penalty: Penalty for repeated tokens (>1.0 = penalize, 1.0 = no penalty)
+        generated_tokens: List of previously generated token IDs for repetition penalty
+    """
     assert temperature >= 0.0, "temperature must be non-negative"
+    assert top_p > 0.0 and top_p <= 1.0, "top_p must be in (0, 1]"
+    assert repetition_penalty > 0.0, "repetition_penalty must be positive"
+    
+    # Apply repetition penalty
+    if repetition_penalty != 1.0 and generated_tokens is not None and len(generated_tokens) > 0:
+        # Create a set of unique generated tokens for efficiency
+        unique_tokens = set(generated_tokens)
+        # Apply penalty to logits of previously generated tokens
+        for token_id in unique_tokens:
+            if 0 <= token_id < logits.size(-1):
+                if logits[0, token_id] > 0:
+                    logits[0, token_id] /= repetition_penalty
+                else:
+                    logits[0, token_id] *= repetition_penalty
+    
     if temperature == 0.0:
         return torch.argmax(logits, dim=-1, keepdim=True)
-    if top_k is not None:
+    
+    # Apply temperature
+    logits = logits / temperature
+    
+    # Apply top_k filtering if specified
+    if top_k is not None and top_k > 0:
         k = min(top_k, logits.size(-1))
-        vals, idx = torch.topk(logits, k, dim=-1)
-        vals = vals / temperature
-        probs = F.softmax(vals, dim=-1)
-        choice = torch.multinomial(probs, num_samples=1, generator=rng)
-        return idx.gather(1, choice)
-    else:
-        logits = logits / temperature
+        top_k_logits, top_k_indices = torch.topk(logits, k, dim=-1)
+        # Create a mask to zero out non-top-k logits
+        logits_filtered = torch.full_like(logits, float('-inf'))
+        logits_filtered.scatter_(-1, top_k_indices, top_k_logits)
+        logits = logits_filtered
+    
+    # Apply top_p (nucleus) sampling
+    if top_p < 1.0:
         probs = F.softmax(logits, dim=-1)
-        return torch.multinomial(probs, num_samples=1, generator=rng)
+        sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+        
+        # Create mask for tokens to keep (cumulative prob <= top_p)
+        sorted_indices_to_remove = cumulative_probs > top_p
+        # Keep at least one token
+        sorted_indices_to_remove[..., 0] = False
+        
+        # Create a mask to zero out filtered tokens
+        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+        logits[indices_to_remove] = float('-inf')
+    
+    # Sample from the filtered distribution
+    probs = F.softmax(logits, dim=-1)
+    return torch.multinomial(probs, num_samples=1, generator=rng)
 
 
 class Engine:
@@ -28,7 +75,7 @@ class Engine:
         self.tokenizer = tokenizer
 
     @torch.inference_mode()
-    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, seed=42):
+    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, top_p=1.0, repetition_penalty=1.0, seed=42):
         assert isinstance(tokens, list) and isinstance(tokens[0], int), "expecting list of ints"
         device = self.model.get_device()
         rng = torch.Generator(device=device)
@@ -54,7 +101,16 @@ class Engine:
         ids = torch.tensor([tokens], dtype=torch.long, device=device)
         logits = self.model.forward(ids, kv_cache=kv_cache_prefill)
         logits = logits[:, -1, :]
-        next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
+        
+        # Track generated tokens for repetition penalty (per sample)
+        # Start with empty lists since we haven't generated anything yet
+        generated_tokens_per_sample = [[] for _ in range(num_samples)]
+        
+        # Prefill: no repetition penalty yet (nothing generated)
+        next_ids = sample_next_token(
+            logits, rng, temperature, top_k, top_p, 
+            1.0, None  # No repetition penalty on first token
+        )  # (B, 1)
         sampled_tokens = next_ids[:, 0].tolist()
 
         # 2) Replicate the KV cache for each sample/row
@@ -88,8 +144,17 @@ class Engine:
                 # Forward the model and get the next token for each row
                 logits = self.model.forward(ids, kv_cache=kv_cache_decode)  # (B, T, vocab_size)
                 logits = logits[:, -1, :]  # (B, vocab_size) at last time step
-                next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
-                sampled_tokens = next_ids[:, 0].tolist()
+                
+                # Sample tokens for each row (with repetition penalty per sample)
+                sampled_tokens = []
+                for i in range(num_samples):
+                    sample_logits = logits[i:i+1, :]  # (1, vocab_size)
+                    sample_generated = generated_tokens_per_sample[i] if repetition_penalty != 1.0 else None
+                    next_id = sample_next_token(
+                        sample_logits, rng, temperature, top_k, top_p,
+                        repetition_penalty, sample_generated
+                    )  # (1, 1)
+                    sampled_tokens.append(next_id[0, 0].item())
 
             # Process each row: choose the next token
             token_column = []  # contains the next token id along each row
@@ -100,6 +165,9 @@ class Engine:
                 token_column.append(next_token)
                 # Update the state of this row to include the next token
                 state.append(next_token)
+                # Track generated tokens for repetition penalty
+                if repetition_penalty != 1.0:
+                    generated_tokens_per_sample[i].append(next_token)
                 # Mark as completed on special tokens
                 if assistant_end and next_token == assistant_end:
                     completed[i] = True
