@@ -133,10 +133,15 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
         ):
             token = token_column[0]  # Single sample
             
-            # Stop early if we hit an end-of-sequence token (don't include it in output)
-            if (bos_token_id is not None and token == bos_token_id) or \
-               (eos_token_id is not None and token == eos_token_id) or \
-               (assistant_end_token_id is not None and token == assistant_end_token_id):
+            # Check for end-of-sequence tokens
+            is_eos = (bos_token_id is not None and token == bos_token_id) or \
+                     (eos_token_id is not None and token == eos_token_id) or \
+                     (assistant_end_token_id is not None and token == assistant_end_token_id)
+            
+            # If SHOW_SPECIAL_TOKENS is True, include special tokens in output before stopping
+            if is_eos:
+                if SHOW_SPECIAL_TOKENS:
+                    response_tokens.append(token)  # Include the token before stopping
                 break
             
             response_tokens.append(token)
@@ -265,7 +270,7 @@ def main():
     parser.add_argument('-t', '--temperature', type=float, default=0.6, help='Sampling temperature')
     parser.add_argument('-k', '--top-k', type=int, default=50, help='Top-k sampling')
     parser.add_argument('--top-p', type=float, default=1.0, help='Top-p (nucleus) sampling threshold (0.0-1.0)')
-    parser.add_argument('--repetition-penalty', type=float, default=1.0, help='Repetition penalty (>1.0 to penalize repetition)')
+    parser.add_argument('--repetition-penalty', type=float, default=1.1, help='Repetition penalty (>1.0 to penalize repetition, default=1.1)')
     parser.add_argument('--max-tokens', type=int, default=256, help='Maximum tokens to generate')
     parser.add_argument('--device-type', type=str, default='', choices=['cuda', 'cpu', 'mps'], 
                        help='Device type (empty = autodetect)')
