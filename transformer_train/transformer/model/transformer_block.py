@@ -136,10 +136,19 @@ class Transformer(nn.Module):
             self.resid_lambdas.fill_(1.0)
             self.x0_lambdas.fill_(0.0)
 
-        if torch.cuda.is_available():
-            self.cos = self.cos.to(dtype=torch.bfloat16)
-            self.sin = self.sin.to(dtype=torch.bfloat16)
-            self.wte = self.wte.to(dtype=torch.bfloat16)
+        self._sync_embedding_dtype()
+
+    def _sync_embedding_dtype(self):
+        self.cos = self.cos.to(dtype=torch.bfloat16)
+        self.sin = self.sin.to(dtype=torch.bfloat16)
+        target = torch.bfloat16 if self.wte.weight.device.type == 'cuda' else torch.float32
+        if self.wte.weight.dtype != target:
+            self.wte.to(dtype=target)
+
+    def _apply(self, fn, recurse=True):
+        out = super()._apply(fn, recurse)
+        out._sync_embedding_dtype()
+        return out
 
     def _compute_window_sizes(self, config):
         pattern = config.get('window_pattern', 'L').upper()
