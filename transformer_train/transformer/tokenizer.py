@@ -1,31 +1,34 @@
 import os
 import pickle
-from functools import lru_cache
-from typing import List, Optional, Union
+
 import torch
 
-# Special tokens for chat format (we'll use these for chat inference later)
+DOC_SEP = "<|endoftext|>"
+IM_START = "<|im_start|>"
+IM_END = "<|im_end|>"
+THINK_START = "<think>"
+THINK_END = "</think>"
+TOOL_CALL_START = "<tool_call>"
+TOOL_CALL_END = "</tool_call>"
+TOOL_RESPONSE_START = "<tool_response>"
+TOOL_RESPONSE_END = "</tool_response>"
+PAD = "<|pad|>"
+
 SPECIAL_TOKENS = [
-    # every document begins with the Beginning of Sequence (BOS) token that delimits documents
-    "<|bos|>",
-    # End of Sequence (EOS) token marks the end of a document
-    "<|eos|>",
-    # tokens below are only used during finetuning to render Conversations into token ids
-    "<|user_start|>",  # user messages
-    "<|user_end|>",
-    "<|assistant_start|>",  # assistant messages
-    "<|assistant_end|>",
-    "<|python_start|>",  # assistant invokes python REPL tool
-    "<|python_end|>",
-    "<|output_start|>",  # python REPL outputs back to assistant
-    "<|output_end|>",
+    DOC_SEP,
+    IM_START,
+    IM_END,
+    THINK_START,
+    THINK_END,
+    TOOL_CALL_START,
+    TOOL_CALL_END,
+    TOOL_RESPONSE_START,
+    TOOL_RESPONSE_END,
+    PAD,
 ]
 
-# NOTE: this split pattern deviates from GPT-4 in that we use \p{N}{1,2} instead of \p{N}{1,3}
-# This is better for smaller vocab sizes
 SPLIT_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,2}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
 
-# Try to import rustbpe and tiktoken
 try:
     import rustbpe
     import tiktoken
@@ -39,24 +42,28 @@ except ImportError:
 
 
 class RustBPETokenizer:
-    def __init__(self, enc, bos_token="<|bos|>", eos_token="<|eos|>"):
-        if not RUSTBPE_AVAILABLE:
-            raise ImportError("rustbpe and tiktoken not available. Install with: pip install rustbpe tiktoken")
+    def __init__(self, enc):
         self.enc = enc
-        self.bos_token_id = self.encode_special(bos_token)
-        self.eos_token_id = self.encode_special(eos_token)
+        self.doc_sep_id = self.encode_special(DOC_SEP)
+        self.im_start_id = self.encode_special(IM_START)
+        self.im_end_id = self.encode_special(IM_END)
+        self.think_start_id = self.encode_special(THINK_START)
+        self.think_end_id = self.encode_special(THINK_END)
+        self.tool_call_start_id = self.encode_special(TOOL_CALL_START)
+        self.tool_call_end_id = self.encode_special(TOOL_CALL_END)
+        self.tool_response_start_id = self.encode_special(TOOL_RESPONSE_START)
+        self.tool_response_end_id = self.encode_special(TOOL_RESPONSE_END)
+        self.pad_id = self.encode_special(PAD)
+        self.bos_token_id = self.doc_sep_id
+        self.eos_token_id = self.doc_sep_id
+        self.special_token_ids = {self.encode_special(t) for t in SPECIAL_TOKENS}
 
     @classmethod
     def train_from_iterator(cls, text_iterator, vocab_size):
-        if not RUSTBPE_AVAILABLE:
-            raise ImportError("rustbpe and tiktoken not available. Install with: pip install rustbpe tiktoken")
-        # 1) train using rustbpe
         tokenizer = rustbpe.Tokenizer()
-        # the special tokens are inserted later in __init__, we don't train them here
         vocab_size_no_special = vocab_size - len(SPECIAL_TOKENS)
         assert vocab_size_no_special >= 256, f"vocab_size_no_special must be at least 256, got {vocab_size_no_special}"
         tokenizer.train_from_iterator(text_iterator, vocab_size_no_special, pattern=SPLIT_PATTERN)
-        # 2) construct the associated tiktoken encoding for inference
         pattern = tokenizer.get_pattern()
         mergeable_ranks_list = tokenizer.get_mergeable_ranks()
         mergeable_ranks = {bytes(k): v for k, v in mergeable_ranks_list}
@@ -65,31 +72,22 @@ class RustBPETokenizer:
         enc = tiktoken.Encoding(
             name="rustbpe",
             pat_str=pattern,
-            mergeable_ranks=mergeable_ranks,  # dict[bytes, int] (token bytes -> merge priority rank)
-            special_tokens=special_tokens,  # dict[str, int] (special token name -> token id)
+            mergeable_ranks=mergeable_ranks,
+            special_tokens=special_tokens,
         )
-        return cls(enc, "<|bos|>", "<|eos|>")
+        return cls(enc)
 
     @classmethod
     def from_directory(cls, tokenizer_dir):
-        if not RUSTBPE_AVAILABLE:
-            raise ImportError("rustbpe and tiktoken not available. Install with: pip install rustbpe tiktoken")
         pickle_path = os.path.join(tokenizer_dir, "tokenizer.pkl")
-        if not os.path.exists(pickle_path):
-            raise FileNotFoundError(f"Tokenizer file not found: {pickle_path}")
         with open(pickle_path, "rb") as f:
             enc = pickle.load(f)
-        return cls(enc, "<|bos|>", "<|eos|>")
+        return cls(enc)
 
     @classmethod
     def from_pretrained(cls, tiktoken_name):
-        if not RUSTBPE_AVAILABLE:
-            raise ImportError("rustbpe and tiktoken not available. Install with: pip install rustbpe tiktoken")
-        # https://github.com/openai/tiktoken/blob/eedc8563/tiktoken_ext/openai_public.py
         enc = tiktoken.get_encoding(tiktoken_name)
-        # tiktoken calls the special document delimiter token "<|endoftext|>"
-        # For GPT models, endoftext is used as both BOS and EOS
-        return cls(enc, "<|endoftext|>", "<|endoftext|>")
+        return cls(enc)
 
     def get_vocab_size(self):
         return self.enc.n_vocab
@@ -100,21 +98,26 @@ class RustBPETokenizer:
     def id_to_token(self, id):
         return self.enc.decode([id])
 
-    @lru_cache(maxsize=32)
     def encode_special(self, text):
         return self.enc.encode_single_token(text)
 
     def get_bos_token_id(self):
         return self.bos_token_id
-    
+
     def get_eos_token_id(self):
         return self.eos_token_id
 
-    def encode(self, text, prepend=None, append=None, num_threads=8, add_special_tokens=False):
-        # For backward compatibility, if add_special_tokens is True, prepend BOS
-        if add_special_tokens and prepend is None:
-            prepend = self.get_bos_token_id()
+    def get_pad_token_id(self):
+        return self.pad_id
 
+    def get_stop_token_ids(self):
+        return [self.doc_sep_id, self.im_end_id]
+
+    def encode(self, text, prepend=None, append=None, num_threads=8, add_special_tokens=False):
+        if add_special_tokens and append is None:
+            append = self.eos_token_id
+        prepend_id = None
+        append_id = None
         if prepend is not None:
             prepend_id = prepend if isinstance(prepend, int) else self.encode_special(prepend)
         if append is not None:
@@ -122,35 +125,29 @@ class RustBPETokenizer:
 
         if isinstance(text, str):
             ids = self.enc.encode_ordinary(text)
-            if prepend is not None:
+            if prepend_id is not None:
                 ids.insert(0, prepend_id)
-            if append is not None:
+            if append_id is not None:
                 ids.append(append_id)
         elif isinstance(text, list):
             ids = self.enc.encode_ordinary_batch(text, num_threads=num_threads)
-            if prepend is not None:
+            if prepend_id is not None:
                 for ids_row in ids:
                     ids_row.insert(0, prepend_id)
-            if append is not None:
+            if append_id is not None:
                 for ids_row in ids:
                     ids_row.append(append_id)
         else:
             raise ValueError(f"Invalid input type: {type(text)}")
-
         return ids
 
     def __call__(self, *args, **kwargs):
         return self.encode(*args, **kwargs)
 
     def decode(self, ids, skip_special_tokens=False):
-        text = self.enc.decode(ids)
-        
-        # Remove special tokens if requested
         if skip_special_tokens:
-            for special_token in SPECIAL_TOKENS:
-                text = text.replace(special_token, "")
-        
-        return text
+            ids = [i for i in ids if i not in self.special_token_ids]
+        return self.enc.decode(ids)
 
     def save(self, tokenizer_dir):
         os.makedirs(tokenizer_dir, exist_ok=True)
@@ -162,208 +159,108 @@ class RustBPETokenizer:
     @property
     def vocab_size(self) -> int:
         return self.get_vocab_size()
-    
-    def render_conversation(self, conversation, max_tokens=2048):
-        import copy
-        # ids, masks that we will return and a helper function to help build them up.
-        ids, mask = [], []
-        def add_tokens(token_ids, mask_val):
-            if isinstance(token_ids, int):
-                token_ids = [token_ids]
-            ids.extend(token_ids)
-            mask.extend([mask_val] * len(token_ids))
 
-        # sometimes the first message is a system message...
-        # => just merge it with the second (user) message
-        if conversation["messages"][0]["role"] == "system":
-            # some conversation surgery is necessary here for now...
-            conversation = copy.deepcopy(conversation) # avoid mutating the original
-            messages = conversation["messages"]
-            assert messages[1]["role"] == "user", "System message must be followed by a user message"
-            messages[1]["content"] = messages[0]["content"] + "\n\n" + messages[1]["content"]
-            messages = messages[1:]
+    def _render_part(self, part, ids, mask, supervised):
+        ptype = part.get("type", "text")
+        text = part.get("text", "")
+        if ptype == "text":
+            self._add(ids, mask, self.encode(text), supervised)
+        elif ptype == "think":
+            self._add(ids, mask, [self.think_start_id], supervised)
+            self._add(ids, mask, self.encode(text), supervised)
+            self._add(ids, mask, [self.think_end_id], supervised)
+        elif ptype == "tool_call":
+            self._add(ids, mask, [self.tool_call_start_id], supervised)
+            self._add(ids, mask, self.encode(text), supervised)
+            self._add(ids, mask, [self.tool_call_end_id], supervised)
+        elif ptype == "tool_response":
+            self._add(ids, mask, [self.tool_response_start_id], 0)
+            self._add(ids, mask, self.encode(text), 0)
+            self._add(ids, mask, [self.tool_response_end_id], 0)
         else:
-            messages = conversation["messages"]
+            raise ValueError(f"Unknown part type: {ptype}")
+
+    @staticmethod
+    def _add(ids, mask, token_ids, mask_val):
+        if isinstance(token_ids, int):
+            token_ids = [token_ids]
+        ids.extend(token_ids)
+        mask.extend([mask_val] * len(token_ids))
+
+    def _render_header(self, ids, mask, role):
+        self._add(ids, mask, [self.im_start_id], 0)
+        self._add(ids, mask, self.encode(role + "\n"), 0)
+
+    def render_conversation(self, conversation, max_tokens=2048):
+        messages = conversation["messages"]
         assert len(messages) >= 1, f"Conversation has less than 1 message: {messages}"
+        ids, mask = [], []
+        newline = self.encode("\n")
 
-        # fetch all the special tokens we need
-        bos = self.get_bos_token_id()
-        eos = self.get_eos_token_id()
-        user_start, user_end = self.encode_special("<|user_start|>"), self.encode_special("<|user_end|>")
-        assistant_start, assistant_end = self.encode_special("<|assistant_start|>"), self.encode_special("<|assistant_end|>")
-        python_start, python_end = self.encode_special("<|python_start|>"), self.encode_special("<|python_end|>")
-        output_start, output_end = self.encode_special("<|output_start|>"), self.encode_special("<|output_end|>")
-
-        # now we can tokenize the conversation
-        add_tokens(bos, 0)
-        for i, message in enumerate(messages):
-
-            # some sanity checking here around assumptions, to prevent footguns
-            must_be_from = "user" if i % 2 == 0 else "assistant"
-            assert message["role"] == must_be_from, f"Message {i} is from {message['role']} but should be from {must_be_from}"
-
-            # content can be either a simple string or a list of parts (e.g. containing tool calls)
+        for message in messages:
+            role = message["role"]
             content = message["content"]
+            supervised = 1 if role == "assistant" else 0
+            self._render_header(ids, mask, role)
 
-            if message["role"] == "user":
-                assert isinstance(content, str), "User messages are simply expected to be strings"
-                value_ids = self.encode(content)
-                add_tokens(user_start, 0)
-                add_tokens(value_ids, 0)
-                add_tokens(user_end, 0)
-            elif message["role"] == "assistant":
-                add_tokens(assistant_start, 0)
-                if isinstance(content, str):
-                    # simple string => simply add the tokens
-                    value_ids = self.encode(content)
-                    add_tokens(value_ids, 1)
-                elif isinstance(content, list):
-                    for part in content:
-                        value_ids = self.encode(part["text"])
-                        if part["type"] == "text":
-                            # string part => simply add the tokens
-                            add_tokens(value_ids, 1)
-                        elif part["type"] == "python":
-                            # python tool call => add the tokens inside <|python_start|> and <|python_end|>
-                            add_tokens(python_start, 1)
-                            add_tokens(value_ids, 1)
-                            add_tokens(python_end, 1)
-                        elif part["type"] == "python_output":
-                            # python output => add the tokens inside <|output_start|> and <|output_end|>
-                            # none of these tokens are supervised because the tokens come from Python at test time
-                            add_tokens(output_start, 0)
-                            add_tokens(value_ids, 0)
-                            add_tokens(output_end, 0)
-                        else:
-                            raise ValueError(f"Unknown part type: {part['type']}")
-                else:
-                    raise ValueError(f"Unknown content type: {type(content)}")
-                add_tokens(assistant_end, 1)
+            reasoning = message.get("reasoning")
+            if role == "assistant" and reasoning:
+                self._render_part({"type": "think", "text": reasoning}, ids, mask, supervised)
+                self._add(ids, mask, newline, supervised)
 
-        # Add EOS token at the end of conversation
-        add_tokens(eos, 1)
+            if isinstance(content, str):
+                self._add(ids, mask, self.encode(content), supervised)
+            elif isinstance(content, list):
+                for part in content:
+                    self._render_part(part, ids, mask, supervised)
+            else:
+                raise ValueError(f"Unknown content type: {type(content)}")
 
-        # truncate to max_tokens tokens MAX (helps prevent OOMs)
+            self._add(ids, mask, [self.im_end_id], supervised)
+            self._add(ids, mask, newline, 0)
+
         ids = ids[:max_tokens]
         mask = mask[:max_tokens]
         return ids, mask
 
-    def render_for_completion(self, conversation):
-        import copy
-        # We have some surgery to do: we need to pop the last message (of the Assistant)
-        conversation = copy.deepcopy(conversation) # avoid mutating the original
-        messages = conversation["messages"]
-        assert messages[-1]["role"] == "assistant", "Last message must be from the Assistant"
-        messages.pop() # remove the last message (of the Assistant) inplace
-
-        # Now tokenize the conversation
-        ids, mask = self.render_conversation(conversation)
-
-        # Finally, to prime the Assistant for a completion, append the Assistant start token
-        assistant_start = self.encode_special("<|assistant_start|>")
-        ids.append(assistant_start)
+    def render_for_completion(self, conversation, enable_thinking=False):
+        messages = list(conversation["messages"])
+        if messages and messages[-1]["role"] == "assistant":
+            messages = messages[:-1]
+        ids, _ = self.render_conversation({"messages": messages})
+        ids.append(self.im_start_id)
+        ids.extend(self.encode("assistant\n"))
+        if enable_thinking:
+            ids.append(self.think_start_id)
         return ids
 
 
-# -----------------------------------------------------------------------------
-# Main tokenizer factory function (backward compatible)
+DEFAULT_TOKENIZER_DIRS = ["tokenizer", "turkish_tokenizer", "out/tokenizer"]
+
+
 def create_tokenizer(tokenizer_dir: str = None, model_path: str = None):
-    if not RUSTBPE_AVAILABLE:
-        raise ImportError(
-            "rustbpe and tiktoken are required. "
-            "Please install rustbpe (build from source or install as package) and tiktoken: pip install tiktoken"
-        )
-    
-    # Try tokenizer_dir first
-    if tokenizer_dir and os.path.exists(tokenizer_dir):
-        pickle_path = os.path.join(tokenizer_dir, "tokenizer.pkl")
-        if os.path.exists(pickle_path):
-            return RustBPETokenizer.from_directory(tokenizer_dir)
-    
-    # Try common default locations
-    default_dirs = [
-        "tokenizer",
-        "turkish_tokenizer",
-        "out/tokenizer",
-    ]
-    for dir_path in default_dirs:
-        if os.path.exists(dir_path):
-            pickle_path = os.path.join(dir_path, "tokenizer.pkl")
-            if os.path.exists(pickle_path):
-                return RustBPETokenizer.from_directory(dir_path)
-    
-    # Legacy support: try SentencePiece if model_path is provided
-    if model_path and os.path.exists(model_path):
-        try:
-            import sentencepiece as smp
-            print("Warning: Using legacy SentencePiece tokenizer. Please train a RustBPE tokenizer instead.")
-            sp = smp.SentencePieceProcessor()
-            sp.load(model_path)
-            
-            class TokenizerWrapper:
-                def __init__(self, sp_processor):
-                    self.sp = sp_processor
-                    
-                def encode(self, text: str, add_special_tokens: bool = True) -> List[int]:
-                    if add_special_tokens:
-                        return [self.sp.bos_id()] + self.sp.encode_as_ids(text)
-                    else:
-                        return self.sp.encode_as_ids(text)
-                
-                def decode(self, token_ids: List[int], skip_special_tokens: bool = True) -> str:
-                    if skip_special_tokens:
-                        filtered_ids = [
-                            tid for tid in token_ids 
-                            if tid not in [self.sp.pad_id(), self.sp.bos_id(), self.sp.eos_id(), self.sp.unk_id()]
-                        ]
-                        return self.sp.decode_ids(filtered_ids)
-                    else:
-                        return self.sp.decode_ids(token_ids)
-                
-                @property
-                def vocab_size(self) -> int:
-                    return self.sp.vocab_size()
-                
-                def get_vocab_size(self) -> int:
-                    return self.sp.vocab_size()
-            
-            return TokenizerWrapper(sp)
-        except ImportError:
-            pass
-    
+    candidates = []
+    if tokenizer_dir:
+        candidates.append(tokenizer_dir)
+    candidates.extend(DEFAULT_TOKENIZER_DIRS)
+    for d in candidates:
+        if os.path.exists(os.path.join(d, "tokenizer.pkl")):
+            return RustBPETokenizer.from_directory(d)
     raise FileNotFoundError(
-        f"Could not find tokenizer. Please provide tokenizer_dir or ensure tokenizer.pkl exists. "
-        f"Expected locations: {default_dirs}"
+        f"tokenizer.pkl not found in any of {candidates}. "
+        f"Train one with tokenizer_train/train_tokenizer.py"
     )
 
 
 def get_token_bytes(tokenizer, device="cpu"):
     vocab_size = tokenizer.get_vocab_size()
     token_bytes = torch.zeros(vocab_size, dtype=torch.int64, device=device)
-    
-    # Get special token IDs
-    special_tokens = tokenizer.get_special_tokens()
-    special_token_ids = set()
-    for token in special_tokens:
-        try:
-            token_id = tokenizer.encode_special(token)
-            if isinstance(token_id, list):
-                special_token_ids.update(token_id)
-            else:
-                special_token_ids.add(token_id)
-        except:
-            pass
-    
+    special_ids = getattr(tokenizer, "special_token_ids", set())
     for token_id in range(vocab_size):
-        if token_id in special_token_ids:
-            token_bytes[token_id] = 0  # Special tokens don't count
-        else:
-            try:
-                # Decode the token and count bytes
-                decoded = tokenizer.decode([token_id], skip_special_tokens=False)
-                # Count UTF-8 bytes
-                token_bytes[token_id] = len(decoded.encode('utf-8'))
-            except:
-                token_bytes[token_id] = 0  # Fallback to 0 if decoding fails
-    
+        if token_id in special_ids:
+            continue
+        try:
+            token_bytes[token_id] = len(tokenizer.decode([token_id]).encode("utf-8"))
+        except Exception:
+            token_bytes[token_id] = 0
     return token_bytes

@@ -1,0 +1,45 @@
+import json
+import os
+
+from safetensors import safe_open
+from safetensors.torch import load_file
+
+from .config import MODEL_CONFIG
+from .common import print0
+from .tokenizer import create_tokenizer
+from .model.transformer_block import Transformer
+
+
+def load_model_from_checkpoint(checkpoint_path, device, eval_mode=True):
+    print0(f"Loading model from: {checkpoint_path}")
+
+    with safe_open(checkpoint_path, framework="pt") as f:
+        metadata = f.metadata() or {}
+
+    config = json.loads(metadata.get('config', '{}')) or MODEL_CONFIG.copy()
+
+    tokenizer = create_tokenizer(tokenizer_dir=metadata.get('tokenizer_path', 'tokenizer'))
+    config['vocab_size'] = tokenizer.vocab_size
+
+    model = Transformer(config, tokenizer).to(device)
+
+    state = load_file(checkpoint_path)
+    prefix = '_orig_mod.'
+    state = {(k[len(prefix):] if k.startswith(prefix) else k): v for k, v in state.items()}
+    model.load_state_dict(state, strict=False)
+    if eval_mode:
+        model.eval()
+
+    meta = dict(metadata)
+    meta['model_config'] = config
+    return model, tokenizer, meta
+
+
+def find_latest_checkpoint(checkpoint_dir="checkpoints"):
+    if not os.path.isdir(checkpoint_dir):
+        return None
+    files = [f for f in os.listdir(checkpoint_dir) if f.endswith('.safetensors')]
+    if not files:
+        return None
+    latest = max(files, key=lambda f: os.path.getmtime(os.path.join(checkpoint_dir, f)))
+    return os.path.join(checkpoint_dir, latest)

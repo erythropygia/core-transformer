@@ -1,11 +1,3 @@
-"""
-Generate text using trained transformer model.
-
-Usage:
-    python generate_text.py -p "Your prompt here"
-    python generate_text.py --interactive
-    python generate_text.py -p "Prompt" --model-path checkpoints/best_model.safetensors
-"""
 
 import os
 import argparse
@@ -14,7 +6,6 @@ from contextlib import nullcontext
 import sys
 from pathlib import Path
 
-# Add parent directory to path
 script_dir = Path(__file__).parent
 project_root = script_dir.parent
 if str(project_root) not in sys.path:
@@ -34,40 +25,32 @@ import json
 def load_model(model_path, device_type="cuda", dtype="bfloat16"):
     if not model_path.endswith('.safetensors'):
         model_path = model_path.replace('.pt', '.safetensors')
-    
+
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model not found: {model_path}")
-    
-    # Load metadata
+
     with safe_open(model_path, framework="pt") as f:
         metadata = f.metadata()
-    
-    # Parse config
+
     config = json.loads(metadata.get('config', '{}'))
     if not config:
         config = json.loads(metadata.get('model_config', '{}'))
-    
-    # Get tokenizer path
+
     tokenizer_path = metadata.get('tokenizer_path', 'tokenizer')
-    
-    # Load tokenizer
+
     if os.path.isdir(tokenizer_path):
         tokenizer = create_tokenizer(tokenizer_dir=tokenizer_path)
     else:
         tokenizer = create_tokenizer(model_path=tokenizer_path)
-    
-    # Set vocab_size
+
     if 'vocab_size' not in config or config['vocab_size'] is None:
         config['vocab_size'] = tokenizer.get_vocab_size()
-    
-    # Create model
+
     device = torch.device(device_type)
     model = Transformer(config, tokenizer).to(device)
-    
-    # Load weights
+
     model_state = load_file(model_path)
-    
-    # Remove compiled model prefixes if any
+
     new_state_dict = {}
     for k, v in model_state.items():
         if k.startswith('_orig_mod.'):
@@ -75,50 +58,31 @@ def load_model(model_path, device_type="cuda", dtype="bfloat16"):
             new_state_dict[new_key] = v
         else:
             new_state_dict[k] = v
-    
+
     model.load_state_dict(new_state_dict, strict=False)
-    
-    # Convert to dtype if needed
+
     if device_type == "cuda" and dtype == "bfloat16":
         model = model.to(dtype=torch.bfloat16)
-    
+
     model.eval()
-    
+
     return model, tokenizer
 
 
 def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, top_k=50, 
                     top_p=1.0, repetition_penalty=1.0, device_type="cuda", dtype="bfloat16"):
-    device = torch.device(device_type)
+    torch.device(device_type)
     ptdtype = torch.bfloat16 if dtype == 'bfloat16' else torch.float32
     autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
-    
-    # Create engine
+
     engine = Engine(model, tokenizer)
-    
-    # Get end-of-sequence tokens
-    bos_token_id = None
-    eos_token_id = None
-    assistant_end_token_id = None
-    try:
-        bos_token_id = tokenizer.get_bos_token_id()
-    except:
-        pass
-    try:
-        eos_token_id = tokenizer.get_eos_token_id()
-    except:
-        pass
-    try:
-        assistant_end_token_id = tokenizer.encode_special("<|assistant_end|>")
-    except:
-        pass
-    
-    # Encode prompt with BOS token (consistent with training)
+
+    stop_token_ids = set(tokenizer.get_stop_token_ids())
+
     prompt_tokens = tokenizer.encode(prompt, prepend=tokenizer.get_bos_token_id())
     if isinstance(prompt_tokens, list) and len(prompt_tokens) > 0 and isinstance(prompt_tokens[0], list):
         prompt_tokens = prompt_tokens[0]
-    
-    # Generate
+
     response_tokens = []
     with autocast_ctx:
         for token_column, token_masks in engine.generate(
@@ -131,57 +95,35 @@ def generate_single(model, tokenizer, prompt, max_tokens=256, temperature=0.6, t
             repetition_penalty=repetition_penalty,
             seed=42
         ):
-            token = token_column[0]  # Single sample
-            
-            # Check for end-of-sequence tokens
-            is_eos = (bos_token_id is not None and token == bos_token_id) or \
-                     (eos_token_id is not None and token == eos_token_id) or \
-                     (assistant_end_token_id is not None and token == assistant_end_token_id)
-            
-            # If SHOW_SPECIAL_TOKENS is True, include special tokens in output before stopping
-            if is_eos:
+            token = token_column[0]
+
+            if token in stop_token_ids:
                 if SHOW_SPECIAL_TOKENS:
-                    response_tokens.append(token)  # Include the token before stopping
+                    response_tokens.append(token)
                 break
-            
+
             response_tokens.append(token)
-    
-    # Decode full sequence (prompt + generated) to show BOS token
-    # This matches training behavior where full sequences are shown
+
     full_sequence = prompt_tokens + response_tokens
     if SHOW_SPECIAL_TOKENS:
-        # Show full sequence with special tokens (BOS will be visible)
         generated_text = tokenizer.decode(full_sequence, skip_special_tokens=False)
     else:
-        # Show full sequence but skip special tokens
         generated_text = tokenizer.decode(full_sequence, skip_special_tokens=True)
-    
+
     return generated_text
 
 
 def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16", 
                      temperature=0.6, top_k=50, top_p=1.0, repetition_penalty=1.0, max_tokens=256):
-    device = torch.device(device_type)
+    torch.device(device_type)
     ptdtype = torch.bfloat16 if dtype == 'bfloat16' else torch.float32
     autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
-    
-    # Create engine
+
     engine = Engine(model, tokenizer)
-    
-    # Special tokens
-    bos = tokenizer.get_bos_token_id()
-    
-    # Check for chat tokens
-    try:
-        user_start = tokenizer.encode_special("<|user_start|>")
-        user_end = tokenizer.encode_special("<|user_end|>")
-        assistant_start = tokenizer.encode_special("<|assistant_start|>")
-        assistant_end = tokenizer.encode_special("<|assistant_end|>")
-        has_chat_tokens = True
-    except:
-        has_chat_tokens = False
-        print("Chat tokens not found, using simple format")
-    
+
+    tokenizer.get_bos_token_id()
+    stop_ids = set(tokenizer.get_stop_token_ids())
+
     print("\n" + "=" * 80)
     print("Interactive chat mode")
     print("=" * 80)
@@ -189,50 +131,34 @@ def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16",
     print("  'quit' or 'exit' - End conversation")
     print("  'clear' - Start new conversation")
     print("-" * 80)
-    
-    conversation_tokens = [bos]
-    
+
+    messages = []
+
     while True:
         try:
             user_input = input("\nUser: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n\nGoodbye!")
             break
-        
-        # Handle commands
+
         if user_input.lower() in ['quit', 'exit', 'q']:
             print("Goodbye!")
             break
-        
+
         if user_input.lower() == 'clear':
-            conversation_tokens = [bos]
+            messages = []
             print("Conversation cleared.")
             continue
-        
+
         if not user_input:
             continue
-        
-        # Add user message
-        if has_chat_tokens:
-            conversation_tokens.append(user_start)
-            conversation_tokens.extend(tokenizer.encode(user_input))
-            conversation_tokens.append(user_end)
-            conversation_tokens.append(assistant_start)
-        else:
-            # Simple format: just add user input
-            conversation_tokens.extend(tokenizer.encode(user_input))
-        
-        # Generate response
+
+        messages.append({"role": "user", "content": user_input})
+        conversation_tokens = tokenizer.render_for_completion({"messages": messages})
+
         print("\nAssistant: ", end="", flush=True)
         response_tokens = []
-        
-        # Get BOS token ID for early stopping
-        bos_token_id = None
-        try:
-            bos_token_id = tokenizer.get_bos_token_id()
-        except:
-            pass
-        
+
         with autocast_ctx:
             for token_column, token_masks in engine.generate(
                 conversation_tokens,
@@ -245,27 +171,19 @@ def interactive_chat(model, tokenizer, device_type="cuda", dtype="bfloat16",
                 seed=42
             ):
                 token = token_column[0]
-                
-                # Check for end tokens (stop early, don't include in output)
-                if has_chat_tokens and token == assistant_end:
+
+                if token in stop_ids:
                     break
-                if bos_token_id is not None and token == bos_token_id:
-                    break
-                
+
                 response_tokens.append(token)
-                
-                # Stream output (respect SHOW_SPECIAL_TOKENS config)
+
                 token_text = tokenizer.decode([token], skip_special_tokens=not SHOW_SPECIAL_TOKENS)
                 print(token_text, end="", flush=True)
-        
-        print()  # New line
-        
-        # Update conversation (no duplicate assistant_end!)
-        conversation_tokens.extend(response_tokens)
-        
-        # Ensure assistant_end is at the end if using chat tokens
-        if has_chat_tokens and (not response_tokens or response_tokens[-1] != assistant_end):
-            conversation_tokens.append(assistant_end)
+
+        print()
+
+        response_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
+        messages.append({"role": "assistant", "content": response_text})
 
 
 def main():
@@ -283,14 +201,12 @@ def main():
                        help='Device type (empty = autodetect)')
     parser.add_argument('-d', '--dtype', type=str, default='bfloat16', choices=['float32', 'bfloat16'], 
                        help='Data type')
-    
+
     args = parser.parse_args()
-    
-    # Autodetect device
+
     device_type = autodetect_device_type() if args.device_type == "" else args.device_type
     print(f"Using device: {device_type}")
-    
-    # Load model
+
     print(f"Loading model from: {args.model_path}")
     try:
         model, tokenizer = load_model(args.model_path, device_type=device_type, dtype=args.dtype)
@@ -306,8 +222,7 @@ def main():
         import traceback
         traceback.print_exc()
         return
-    
-    # Generate
+
     if args.interactive or not args.prompt:
         interactive_chat(
             model, tokenizer,

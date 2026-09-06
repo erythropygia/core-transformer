@@ -4,8 +4,6 @@ from jinja2 import Template
 import torch
 import torch.distributed as dist
 
-# -----------------------------------------------------------------------------
-# Prompt rendering utilities
 
 def render_prompts_mc(item, continuation_delimiter, fewshot_examples=None):
     template_str = """
@@ -58,7 +56,6 @@ def render_prompts_lm(item, continuation_delimiter, fewshot_examples=None):
         'continuation_delimiter': continuation_delimiter,
         'item': item
     }
-    # Return two prompts: without and with the continuation
     prompt_without = template.render(include_continuation=False, **context)
     prompt_with = template.render(include_continuation=True, **context)
     prompt_without = prompt_without.strip()
@@ -71,7 +68,6 @@ def find_common_length(token_sequences, direction='left'):
         'left': range(min_len),
         'right': range(-1, -min_len-1, -1)
     }[direction]
-    # Find the first position where the token sequences differ
     for i, idx in enumerate(indices):
         token = token_sequences[0][idx]
         if not all(seq[idx] == token for seq in token_sequences):
@@ -88,9 +84,7 @@ def stack_sequences(tokens, pad_token_id):
 
 
 def batch_sequences_mc(tokenizer, prompts):
-    # In multiple choice, contexts are the same but the continuation is different (common prefix)
     tokens = tokenizer.encode(prompts, prepend=tokenizer.get_bos_token_id())
-    # figure out the start and end of each continuation
     answer_start_idx = find_common_length(tokens, direction='left')
     start_indices = [answer_start_idx] * len(prompts)
     end_indices = [len(x) for x in tokens]
@@ -98,9 +92,7 @@ def batch_sequences_mc(tokenizer, prompts):
 
 
 def batch_sequences_schema(tokenizer, prompts):
-    # In schema tasks, contexts vary but continuation is the same (common suffix)
     tokens = tokenizer.encode(prompts, prepend=tokenizer.get_bos_token_id())
-    # figure out the start and end of each context
     suffix_length = find_common_length(tokens, direction='right')
     end_indices = [len(x) for x in tokens]
     start_indices = [ei - suffix_length for ei in end_indices]
@@ -108,32 +100,25 @@ def batch_sequences_schema(tokenizer, prompts):
 
 
 def batch_sequences_lm(tokenizer, prompts):
-    # In LM tasks, we have two prompts: without and with continuation
     tokens = tokenizer.encode(prompts, prepend=tokenizer.get_bos_token_id())
     tokens_without, tokens_with = tokens
     start_idx, end_idx = len(tokens_without), len(tokens_with)
     assert start_idx < end_idx, "prompt without is supposed to be a prefix of prompt with"
     assert tokens_without == tokens_with[:start_idx], "prompt without is supposed to be a prefix of prompt with"
-    # we only need the with continuation prompt in the LM task, i.e. batch size of 1
     return [tokens_with], [start_idx], [end_idx]
 
 
 @torch.no_grad()
 def forward_model(model, input_ids):
     batch_size, seq_len = input_ids.size()
-    # Use model.forward instead of model() for compatibility
     logits, _ = model.forward(input_ids, targets=None)
-    # Roll the tensor to the left by one position to get the (autoregressive) target ids
     target_ids = torch.roll(input_ids, shifts=-1, dims=1)
-    # Calculate cross entropy at all positions
     losses = torch.nn.functional.cross_entropy(
         logits.view(batch_size * seq_len, -1),
         target_ids.view(batch_size * seq_len),
         reduction='none'
     ).view(batch_size, seq_len)
-    # Set the last column to be nan because there is no autoregressive loss there
     losses[:, -1] = float('nan')
-    # Get the argmax predictions at each position
     predictions = logits.argmax(dim=-1)
     return losses, predictions
 
@@ -145,7 +130,6 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
     num_fewshot = task_meta['num_fewshot']
     continuation_delimiter = task_meta['continuation_delimiter']
 
-    # Sample few-shot examples (excluding current item)
     fewshot_examples = []
     if num_fewshot > 0:
         rng = random.Random(1234 + idx)
@@ -153,7 +137,6 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
         fewshot_indices = rng.sample(available_indices, num_fewshot)
         fewshot_examples = [data[i] for i in fewshot_indices]
 
-    # Render prompts and batch sequences based on task type
     if task_type == 'multiple_choice':
         prompts = render_prompts_mc(item, continuation_delimiter, fewshot_examples)
         tokens, start_idxs, end_idxs = batch_sequences_mc(tokenizer, prompts)
@@ -166,42 +149,34 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
-    # Some models can't forward sequences beyond a certain length (e.g. GPT-2)
-    # In these cases, we have to truncate sequences to max length and adjust the indices
     max_seq_len = getattr(model, 'block_size', None) or getattr(model.config, 'block_size', None) or 1024
     if max_seq_len is not None:
         new_tokens, new_start_idxs, new_end_idxs = [], [], []
         for t, s, e in zip(tokens, start_idxs, end_idxs):
             if len(t) > max_seq_len:
                 num_to_crop = len(t) - max_seq_len
-                new_tokens.append(t[-max_seq_len:]) # take the last max_seq_len tokens
-                new_start_idxs.append(max(0, s - num_to_crop)) # shift the indices down
+                new_tokens.append(t[-max_seq_len:])
+                new_start_idxs.append(max(0, s - num_to_crop))
                 new_end_idxs.append(max(0, e - num_to_crop))
             else:
-                new_tokens.append(t) # keep unchanged
+                new_tokens.append(t)
                 new_start_idxs.append(s)
                 new_end_idxs.append(e)
         tokens, start_idxs, end_idxs = new_tokens, new_start_idxs, new_end_idxs
 
-    # Stack up all the sequences into a batch
-    pad_token_id = tokenizer.get_bos_token_id() # use BOS as pad token is ok
+    pad_token_id = tokenizer.get_bos_token_id()
     input_ids = stack_sequences(tokens, pad_token_id)
     input_ids = input_ids.to(device)
 
-    # Forward the model, get the autoregressive loss and argmax prediction at each token
     losses, predictions = forward_model(model, input_ids)
 
-    # See if the losses/predictions come out correctly
     if task_type == 'language_modeling':
-        # language modeling task is currently always batch size 1
         si = start_idxs[0]
         ei = end_idxs[0]
-        # predictions[i] predict input_ids[i+1] autoregressively
         predicted_tokens = predictions[0, si-1:ei-1]
         actual_tokens = input_ids[0, si:ei]
         is_correct = torch.all(predicted_tokens == actual_tokens).item()
     elif task_type in ['multiple_choice', 'schema']:
-        # For MC/schema: find the option with lowest average loss
         mean_losses = [losses[i, si-1:ei-1].mean().item()
                         for i, (si, ei) in enumerate(zip(start_idxs, end_idxs))]
         pred_idx = mean_losses.index(min(mean_losses))
@@ -216,15 +191,11 @@ def evaluate_task(model, tokenizer, data, device, task_meta):
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
     correct = torch.zeros(len(data), dtype=torch.float32, device=device)
-    # stride the examples to each rank
     for idx in range(rank, len(data), world_size):
         is_correct = evaluate_example(idx, model, tokenizer, data, device, task_meta)
         correct[idx] = float(is_correct)
-    # sync results across all the processes if running distributed
     if world_size > 1:
         dist.barrier()
         dist.all_reduce(correct, op=dist.ReduceOp.SUM)
-    # compute the mean
     mean_correct = correct.mean().item()
     return mean_correct
-
