@@ -38,7 +38,6 @@ class DistAdamW(torch.optim.Optimizer):
                 lr = group['lr'] * getattr(p, "lr_mul", 1.0)
                 state = self.state[p]
                 g_slice = grad_slices[idx]
-                # State init
                 if not state:
                     state['step'] = torch.tensor(0, dtype=torch.int64, device=p.device)
                     state['exp_avg'] = torch.zeros_like(p_slice)
@@ -47,17 +46,13 @@ class DistAdamW(torch.optim.Optimizer):
                 exp_avg_sq = state['exp_avg_sq']
                 state['step'] += 1
                 t = state['step']
-                # weight decay
                 if wd != 0:
                     eff_weight_decay = lr * wd * getattr(p, "wd_mul", 1.0)
                     p_slice.mul_(1 - eff_weight_decay)
-                # update running averages
                 exp_avg.mul_(beta1).add_(g_slice, alpha=1 - beta1)
                 exp_avg_sq.mul_(beta2).addcmul_(g_slice, g_slice, value=1 - beta2)
-                # bias corrections
                 bias1 = 1 - beta1 ** t
                 bias2 = 1 - beta2 ** t
-                # compute step
                 denom = exp_avg_sq.sqrt().add_(eps)
                 step_size = lr * (torch.sqrt(bias2) / bias1)
                 update = exp_avg.div(denom).mul_(step_size)
@@ -65,4 +60,3 @@ class DistAdamW(torch.optim.Optimizer):
                 idx += 1
                 all_reduce_futures.append(dist.all_gather_into_tensor(p, p_slice, async_op=True).get_future())
         torch.futures.collect_all(all_reduce_futures).wait()
-

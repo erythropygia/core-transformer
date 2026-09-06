@@ -1,70 +1,49 @@
-"""
-Train the transformer model
-
-Usage:
-    # Single GPU
-    python run_train.py
-    
-    # Distributed training
-    torchrun --nproc_per_node=8 run_train.py
-    
-    # With custom config
-    python run_train.py --batch-size 8 --learning-rate 6e-4
-"""
 
 import sys
 from pathlib import Path
 
-# Add parent directory to path so imports work when running script directly
 script_dir = Path(__file__).parent
 project_root = script_dir.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
-    
+
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
-from contextlib import nullcontext
 import argparse
 
 from transformer_train.transformer.training.train import train
 from transformer_train.transformer.common import compute_init, compute_cleanup, print0, autodetect_device_type
-from transformer_train.transformer.config import MODEL_CONFIG, TRAINING_CONFIG
+from transformer_train.transformer.config import TRAINING_CONFIG
 
 
 def main():
     parser = argparse.ArgumentParser(description='Train transformer model')
-    
-    # Training config overrides
+
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size')
     parser.add_argument('--learning-rate', type=float, default=None, help='Learning rate (if not using Muon)')
     parser.add_argument('--max-epochs', type=int, default=None, help='Maximum epochs')
     parser.add_argument('--device-type', type=str, default='', choices=['cuda', 'cpu', 'mps'], help='Device type (empty = autodetect)')
-    
-    # Muon optimizer settings
+
     parser.add_argument('--use-muon', action='store_true', default=None, help='Use Muon optimizer')
     parser.add_argument('--no-muon', dest='use_muon', action='store_false', help='Disable Muon optimizer')
     parser.add_argument('--unembedding-lr', type=float, default=None, help='Unembedding learning rate (Muon)')
     parser.add_argument('--embedding-lr', type=float, default=None, help='Embedding learning rate (Muon)')
     parser.add_argument('--matrix-lr', type=float, default=None, help='Matrix learning rate (Muon)')
-    
-    # Resume/checkpoint
+
     parser.add_argument('--resume', action='store_true', help='Auto-resume from latest checkpoint')
     parser.add_argument('--checkpoint', type=str, default=None, help='Resume from specific checkpoint')
     parser.add_argument('--pretrained', type=str, default=None, help='Load pretrained model and continue training')
     parser.add_argument('--fresh-epochs', type=int, default=None, help='Number of fresh epochs after loading pretrained')
-    
-    # Tokenizer
+
     parser.add_argument('--tokenizer-dir', type=str, default=None, help='Tokenizer directory path')
-    
-    # Other
+
     parser.add_argument('--use-wandb', action='store_true', default=None, help='Enable wandb logging')
     parser.add_argument('--no-wandb', dest='use_wandb', action='store_false', help='Disable wandb logging')
-    
+
     args = parser.parse_args()
-    
-    # Update config from args
+
     config_updates = {}
     if args.batch_size is not None:
         config_updates['batch_size'] = args.batch_size
@@ -82,15 +61,13 @@ def main():
         config_updates['matrix_lr'] = args.matrix_lr
     if args.use_wandb is not None:
         config_updates['use_wandb'] = args.use_wandb
-    
+
     TRAINING_CONFIG.update(config_updates)
-    
-    # Autodetect device
+
     device_type = autodetect_device_type() if args.device_type == "" else args.device_type
-    
-    # Initialize distributed training if needed
+
     ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
-    
+
     print0("=" * 80)
     print0("CORE-TRANSFORMER TRAINING")
     print0("=" * 80)
@@ -107,16 +84,14 @@ def main():
         print0(f"Learning rate: {TRAINING_CONFIG['learning_rate']}")
     print0("=" * 80)
     print0()
-    
+
     try:
-        # Determine resume/checkpoint options
         auto_resume = args.resume
         resume_from_checkpoint = args.checkpoint
         pretrained_model_path = args.pretrained
         fresh_epochs = args.fresh_epochs
         tokenizer_path = args.tokenizer_dir or "tokenizer"
-        
-        # Train
+
         model = train(
             auto_resume=auto_resume,
             resume_from_checkpoint=resume_from_checkpoint,
@@ -124,9 +99,9 @@ def main():
             fresh_epochs=fresh_epochs,
             tokenizer_path=tokenizer_path
         )
-        
+
         print0("\nTraining completed successfully!")
-        
+
     except KeyboardInterrupt:
         print0("\nTraining interrupted by user")
     except Exception as e:
@@ -134,13 +109,12 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
-        # Cleanup
         try:
             if torch.distributed.is_initialized():
                 compute_cleanup()
         except:
             pass
-        
+
         from transformer_train.transformer.utils import cleanup_memory
         cleanup_memory()
 

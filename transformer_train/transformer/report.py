@@ -22,13 +22,11 @@ def get_git_info():
     info['commit'] = run_command("git rev-parse --short HEAD") or "unknown"
     info['branch'] = run_command("git rev-parse --abbrev-ref HEAD") or "unknown"
 
-    # Check if repo is dirty (has uncommitted changes)
     status = run_command("git status --porcelain")
     info['dirty'] = bool(status) if status is not None else False
 
-    # Get commit message
     info['message'] = run_command("git log -1 --pretty=%B") or ""
-    info['message'] = info['message'].split('\n')[0][:80]  # First line, truncated
+    info['message'] = info['message'].split('\n')[0][:80]
 
     return info
 
@@ -49,7 +47,6 @@ def get_gpu_info():
         info["names"].append(props.name)
         info["memory_gb"].append(props.total_memory / (1024**3))
 
-    # Get CUDA version
     info["cuda_version"] = torch.version.cuda or "unknown"
 
     return info
@@ -57,18 +54,15 @@ def get_gpu_info():
 def get_system_info():
     info = {}
 
-    # Basic system info
     info['hostname'] = socket.gethostname()
     info['platform'] = platform.system()
     info['python_version'] = platform.python_version()
     info['torch_version'] = torch.__version__
 
-    # CPU and memory
     info['cpu_count'] = psutil.cpu_count(logical=False)
     info['cpu_count_logical'] = psutil.cpu_count(logical=True)
     info['memory_gb'] = psutil.virtual_memory().total / (1024**3)
 
-    # User and environment
     info['user'] = os.environ.get('USER', os.environ.get('USERNAME', 'unknown'))
     info['core_transformer_base_dir'] = os.environ.get('CORE_TRANSFORMER_BASE_DIR', os.getcwd())
     info['working_dir'] = os.getcwd()
@@ -76,7 +70,6 @@ def get_system_info():
     return info
 
 def estimate_cost(gpu_info, runtime_hours=None):
-    # Rough pricing, from Lambda Cloud
     default_rate = 2.0
     gpu_hourly_rates = {
         "H100": 3.00,
@@ -87,7 +80,6 @@ def estimate_cost(gpu_info, runtime_hours=None):
     if not gpu_info.get("available"):
         return None
 
-    # Try to identify GPU type from name
     hourly_rate = None
     gpu_name = gpu_info["names"][0] if gpu_info["names"] else "unknown"
     for gpu_type, rate in gpu_hourly_rates.items():
@@ -96,7 +88,7 @@ def estimate_cost(gpu_info, runtime_hours=None):
             break
 
     if hourly_rate is None:
-        hourly_rate = default_rate * gpu_info["count"]  # Default estimate
+        hourly_rate = default_rate * gpu_info["count"]
 
     return {
         "hourly_rate": hourly_rate,
@@ -149,13 +141,11 @@ Generated: {timestamp}
 
 """
 
-    # Count source code metrics
     try:
         num_chars = 0
         num_lines = 0
         num_files = 0
         for root, dirs, files in os.walk('.'):
-            # Skip hidden dirs and common ignore patterns
             dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['__pycache__', 'node_modules', 'target']]
             for file in files:
                 if file.endswith(('.py', '.md', '.rs', '.html', '.toml', '.sh')):
@@ -168,7 +158,7 @@ Generated: {timestamp}
                             num_files += 1
                     except:
                         pass
-        num_tokens = num_chars // 4  # assume approximately 4 chars per token
+        num_tokens = num_chars // 4
     except:
         num_chars = num_lines = num_files = num_tokens = 0
 
@@ -182,12 +172,10 @@ Generated: {timestamp}
 """
     return header
 
-# -----------------------------------------------------------------------------
 
 def slugify(text):
     return text.lower().replace(" ", "-").replace("_", "-")
 
-# the expected files and their order
 EXPECTED_FILES = [
     "tokenizer-training.md",
     "base-model-training.md",
@@ -201,12 +189,11 @@ EXPECTED_FILES = [
     "chat-evaluation-rl.md",
 ]
 
-# the metrics we're currently interested in
 chat_metrics = ["ARC-Easy", "ARC-Challenge", "MMLU", "GSM8K", "ChatCORE"]
 
 def extract(section, keys):
     if not isinstance(keys, list):
-        keys = [keys] # convenience
+        keys = [keys]
     out = {}
     for line in section.split("\n"):
         for key in keys:
@@ -239,13 +226,10 @@ class Report:
             f.write(f"timestamp: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
             for item in data:
                 if not item:
-                    # skip falsy values like None or empty dict etc.
                     continue
                 if isinstance(item, str):
-                    # directly write the string
                     f.write(item)
                 else:
-                    # render a dict
                     for k, v in item.items():
                         if isinstance(v, float):
                             vstr = f"{v:.4f}"
@@ -261,25 +245,22 @@ class Report:
         report_dir = self.report_dir
         report_file = os.path.join(report_dir, "report.md")
         print(f"Generating report to {report_file}")
-        final_metrics = {} # the most important final metrics we'll add as table at the end
+        final_metrics = {}
         start_time = None
         end_time = None
         with open(report_file, "w", encoding="utf-8") as out_file:
-            # write the header first
             header_file = os.path.join(report_dir, "header.md")
             if os.path.exists(header_file):
                 with open(header_file, "r", encoding="utf-8") as f:
                     header_content = f.read()
                     out_file.write(header_content)
                     start_time = extract_timestamp(header_content, "Run started:")
-                    # capture bloat data for summary later
                     bloat_data = re.search(r"### Bloat\n(.*?)\n\n", header_content, re.DOTALL)
                     bloat_data = bloat_data.group(1) if bloat_data else ""
             else:
                 start_time = None
                 bloat_data = "[bloat data missing]"
                 print(f"Warning: {header_file} does not exist. Did you forget to run `python -m transformer.report reset`?")
-            # process all the individual sections
             for file_name in EXPECTED_FILES:
                 section_file = os.path.join(report_dir, file_name)
                 if not os.path.exists(section_file):
@@ -287,11 +268,8 @@ class Report:
                     continue
                 with open(section_file, "r", encoding="utf-8") as in_file:
                     section = in_file.read()
-                # Extract timestamp from this section
                 if "rl" not in file_name:
-                    # Skip RL sections for end_time calculation because RL is experimental
                     end_time = extract_timestamp(section, "timestamp:")
-                # extract the most important metrics from the sections
                 if file_name == "base-model-evaluation.md":
                     final_metrics["base"] = extract(section, "CORE")
                 if file_name == "chat-evaluation-mid.md":
@@ -299,36 +277,27 @@ class Report:
                 if file_name == "chat-evaluation-sft.md":
                     final_metrics["sft"] = extract(section, chat_metrics)
                 if file_name == "chat-evaluation-rl.md":
-                    final_metrics["rl"] = extract(section, "GSM8K") # RL only evals GSM8K
-                # append this section of the report
+                    final_metrics["rl"] = extract(section, "GSM8K")
                 out_file.write(section)
                 out_file.write("\n")
-            # add the final metrics table
             out_file.write("## Summary\n\n")
-            # Copy over the bloat metrics from the header
             out_file.write(bloat_data)
             out_file.write("\n\n")
-            # Collect all unique metric names
             all_metrics = set()
             for stage_metrics in final_metrics.values():
                 all_metrics.update(stage_metrics.keys())
-            # Custom ordering: CORE first, ChatCORE last, rest in middle
             all_metrics = sorted(all_metrics, key=lambda x: (x != "CORE", x == "ChatCORE", x))
-            # Fixed column widths
             stages = ["base", "mid", "sft", "rl"]
             metric_width = 15
             value_width = 8
-            # Write table header
             header = f"| {'Metric'.ljust(metric_width)} |"
             for stage in stages:
                 header += f" {stage.upper().ljust(value_width)} |"
             out_file.write(header + "\n")
-            # Write separator
             separator = f"|{'-' * (metric_width + 2)}|"
             for stage in stages:
                 separator += f"{'-' * (value_width + 2)}|"
             out_file.write(separator + "\n")
-            # Write table rows
             for metric in all_metrics:
                 row = f"| {metric.ljust(metric_width)} |"
                 for stage in stages:
@@ -336,7 +305,6 @@ class Report:
                     row += f" {str(value).ljust(value_width)} |"
                 out_file.write(row + "\n")
             out_file.write("\n")
-            # Calculate and write total wall clock time
             if start_time and end_time:
                 duration = end_time - start_time
                 total_seconds = int(duration.total_seconds())
@@ -345,22 +313,18 @@ class Report:
                 out_file.write(f"Total wall clock time: {hours}h{minutes}m\n")
             else:
                 out_file.write("Total wall clock time: unknown\n")
-        # also cp the report.md file to current directory
         print(f"Copying report.md to current directory for convenience")
         shutil.copy(report_file, "report.md")
         return report_file
 
     def reset(self):
-        # Remove section files
         for file_name in EXPECTED_FILES:
             file_path = os.path.join(self.report_dir, file_name)
             if os.path.exists(file_path):
                 os.remove(file_path)
-        # Remove report.md if it exists
         report_file = os.path.join(self.report_dir, "report.md")
         if os.path.exists(report_file):
             os.remove(report_file)
-        # Generate and write the header section with start timestamp
         header_file = os.path.join(self.report_dir, "header.md")
         header = generate_header()
         start_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -369,7 +333,6 @@ class Report:
             f.write(f"Run started: {start_time}\n\n---\n\n")
         print(f"Reset report and wrote header to {header_file}")
 
-# -----------------------------------------------------------------------------
 
 class DummyReport:
     def log(self, *args, **kwargs):
@@ -380,7 +343,6 @@ class DummyReport:
         pass
 
 def get_report():
-    # just for convenience, only rank 0 logs to report
     from .common import get_base_dir, get_dist_info
     ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
     if ddp_rank == 0:
@@ -398,4 +360,3 @@ if __name__ == "__main__":
         get_report().generate()
     elif args.command == "reset":
         get_report().reset()
-
