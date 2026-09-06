@@ -37,7 +37,7 @@ class CausalSelfAttention(nn.Module):
         self.c_v = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
         self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
 
-    def forward(self, x, cos_sin, window_size=(-1, 0), kv_cache=None):
+    def forward(self, x, cos_sin, window_size=(-1, 0), kv_cache=None, cache_layer_idx=None):
         B, T, C = x.size()
 
         q = self.c_q(x).view(B, T, self.n_head, self.head_dim)
@@ -54,7 +54,8 @@ class CausalSelfAttention(nn.Module):
             if kv_cache.kv_cache is None:
                 kv_cache.init_cache(k.dtype, k.device)
 
-            k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
+            slot = self.layer_idx if cache_layer_idx is None else cache_layer_idx
+            k_cache, v_cache = kv_cache.get_layer_cache(slot)
             y = flash_attn.flash_attn_with_kvcache(
                 q, k_cache, v_cache,
                 k=k, v=v,
@@ -62,8 +63,6 @@ class CausalSelfAttention(nn.Module):
                 causal=True,
                 window_size=window_size,
             )
-            if self.layer_idx == kv_cache.num_layers - 1:
-                kv_cache.advance(T)
 
         y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
@@ -89,8 +88,8 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config, layer_idx)
         self.mlp = MLP(config)
 
-    def forward(self, x, cos_sin, window_size, kv_cache=None):
-        x = x + self.attn(norm(x), cos_sin, window_size, kv_cache)
+    def forward(self, x, cos_sin, window_size, kv_cache=None, cache_layer_idx=None):
+        x = x + self.attn(norm(x), cos_sin, window_size, kv_cache, cache_layer_idx)
         x = x + self.mlp(norm(x))
         return x
 
@@ -136,10 +135,19 @@ class Transformer(nn.Module):
             self.resid_lambdas.fill_(1.0)
             self.x0_lambdas.fill_(0.0)
 
-        if torch.cuda.is_available():
-            self.cos = self.cos.to(dtype=torch.bfloat16)
-            self.sin = self.sin.to(dtype=torch.bfloat16)
-            self.wte = self.wte.to(dtype=torch.bfloat16)
+        self._sync_embedding_dtype()
+
+    def _sync_embedding_dtype(self):
+        self.cos = self.cos.to(dtype=torch.bfloat16)
+        self.sin = self.sin.to(dtype=torch.bfloat16)
+        target = torch.bfloat16 if self.wte.weight.device.type == 'cuda' else torch.float32
+        if self.wte.weight.dtype != target:
+            self.wte.to(dtype=target)
+
+    def _apply(self, fn, recurse=True):
+        out = super()._apply(fn, recurse)
+        out._sync_embedding_dtype()
+        return out
 
     def _compute_window_sizes(self, config):
         pattern = config.get('window_pattern', 'L').upper()
@@ -241,6 +249,8 @@ class Transformer(nn.Module):
         for i, block in enumerate(self.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
             x = block(x, cos_sin, self.window_sizes[i], kv_cache)
+        if kv_cache is not None:
+            kv_cache.advance(T)
         x = norm(x)
 
         softcap = 15

@@ -21,6 +21,7 @@ from ..data.sft_dataset import SFTDataset, sft_collate
 from ..data.dataloader import tokenizing_distributed_data_loader_with_state, tokenizing_distributed_data_loader
 from ..data.dataset_utils import create_mid_datasets, create_sft_datasets
 from ..model.transformer_block import Transformer
+from ..model.recurrent import RecurrentTransformer, RecurrenceSampler
 
 try:
     from safetensors.torch import save_file, load_file
@@ -294,8 +295,26 @@ def train(
     print(f"Tokens per optimizer step: {tokens_per_step:,}")
     print(f"Planned steps per epoch: {steps_per_epoch:,}")
 
-    print(f"\nInitializing Transformer...")
-    model = Transformer(MODEL_CONFIG, tokenizer).to(device)
+    recurrent_cfg = MODEL_CONFIG.get('recurrent', {})
+    use_recurrent = recurrent_cfg.get('enabled', False)
+    r_sampler = None
+    if use_recurrent:
+        print(f"\nInitializing RecurrentTransformer...")
+        model = RecurrentTransformer(MODEL_CONFIG, tokenizer).to(device)
+        r_sampler = RecurrenceSampler(
+            mean=recurrent_cfg.get('r_mean', 5.0),
+            sigma=recurrent_cfg.get('r_sigma', 0.5),
+            r_min=recurrent_cfg.get('r_min', 1),
+            r_max=recurrent_cfg.get('r_max', 16),
+            seed=TRAINING_CONFIG.get('shuffle_seed', 42),
+        )
+        print(f"  prelude {recurrent_cfg['n_prelude']} / "
+              f"recurrent {recurrent_cfg['n_recurrent']} / coda {recurrent_cfg['n_coda']}")
+        print(f"  r ~ Poisson-lognormal(mean={recurrent_cfg.get('r_mean', 5.0)}), "
+              f"backprop through last {recurrent_cfg.get('backprop_depth', 8)}")
+    else:
+        print(f"\nInitializing Transformer...")
+        model = Transformer(MODEL_CONFIG, tokenizer).to(device)
 
     print(f"Model parameters: {model.get_num_params()/1e6:.1f}M")
     print(f"Memory after model load: {get_memory_usage()}")
@@ -529,7 +548,7 @@ def train(
                     dtype=autocast_dtype,
                     enabled=use_mixed_precision
                 ):
-                    loss = model(inputs, targets)
+                    loss = model(inputs, targets, r=r_sampler.sample()) if r_sampler else model(inputs, targets)
                     loss = loss / TRAINING_CONFIG['accumulation_steps']
 
                 if scaler:
@@ -776,7 +795,7 @@ def train(
                         loss_unreduced = F.cross_entropy(logits_flat, targets_flat, reduction='none')
                         loss = (loss_unreduced * loss_mask_flat).sum() / (loss_mask_flat.sum() + 1e-8)
                     else:
-                        loss = model(inputs, targets)
+                        loss = model(inputs, targets, r=r_sampler.sample()) if r_sampler else model(inputs, targets)
 
                     loss = loss / TRAINING_CONFIG['accumulation_steps']
 

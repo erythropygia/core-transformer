@@ -60,10 +60,14 @@ class Engine:
         stop_ids = set(self.tokenizer.get_stop_token_ids()) if hasattr(self.tokenizer, 'get_stop_token_ids') else set()
 
         m = self.model.config
+        if hasattr(self.model, 'cache_num_layers'):
+            cache_layers = self.model.cache_num_layers(getattr(self.model, 'r_default', None))
+        else:
+            cache_layers = m['n_layer']
         kv_model_kwargs = {
             "num_heads": m.get('n_kv_head', m['n_head']),
             "head_dim": m['n_embd'] // m['n_head'],
-            "num_layers": m['n_layer']
+            "num_layers": cache_layers
         }
         kv_cache_prefill = KVCache(
             batch_size=1,

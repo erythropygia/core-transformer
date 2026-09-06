@@ -6,6 +6,21 @@ MODEL_CONFIG = {
     'block_size': 1024,
     'vocab_size': None,
     'window_pattern': 'L',
+    'recurrent': {
+        'enabled': True,
+        'n_prelude': 6,
+        'n_recurrent': 8,
+        'n_coda': 6,
+        'r_default': 4,
+        'r_mean': 5.0,
+        'r_sigma': 0.5,
+        'r_min': 1,
+        'r_max': 16,
+        'backprop_depth': 8,
+        'state_init': 'random',
+        'state_init_std': 0.02,
+        'adapter': True,
+    },
 }
 
 TRAINING_CONFIG = {
