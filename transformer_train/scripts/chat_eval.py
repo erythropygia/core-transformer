@@ -91,7 +91,7 @@ def run_categorical_eval(task_object, tokenizer, model, batch_size, max_problems
             input_ids[i, :len(prompt)] = torch.tensor(prompt, dtype=torch.long, device=device)
 
         with torch.no_grad():
-            logits, _ = model.forward(input_ids, targets=None)
+            logits = model.forward(input_ids, targets=None)
             last_positions = torch.tensor([len(p) - 1 for p in encoded_prompts], device=device)
             last_logits = logits[torch.arange(len(encoded_prompts), device=device), last_positions]
 

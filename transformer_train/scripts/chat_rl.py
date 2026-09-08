@@ -243,7 +243,9 @@ def main():
                 advantages = advantages_all[b0:b1]
 
                 with autocast_ctx:
-                    _, loss2d = model.forward(inputs, targets=targets)
+                    loss_flat = model.forward(inputs, targets=targets,
+                                              loss_reduction='none')
+                    loss2d = loss_flat.view(inputs.size(0), -1)
                     logp = -loss2d
 
                 pg_obj = (logp * advantages.unsqueeze(-1)).sum()
