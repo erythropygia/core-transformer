@@ -59,7 +59,14 @@ def load_model(model_path, device_type="cuda", dtype="bfloat16"):
         else:
             new_state_dict[k] = v
 
-    model.load_state_dict(new_state_dict, strict=False)
+    result = model.load_state_dict(new_state_dict, strict=False)
+    trained = {name for name, _ in model.named_parameters()}
+    absent = [k for k in result.missing_keys if k in trained]
+    if absent:
+        raise RuntimeError(
+            f"{model_path} is missing {len(absent)} trained tensors: {absent[:8]}. "
+            f"Refusing to generate from a partly random model."
+        )
 
     if device_type == "cuda" and dtype == "bfloat16":
         model = model.to(dtype=torch.bfloat16)

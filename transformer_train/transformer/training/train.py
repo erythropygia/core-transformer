@@ -333,7 +333,14 @@ def train(
             else:
                 new_state_dict[k] = v
 
-        model.load_state_dict(new_state_dict, strict=False)
+        result = model.load_state_dict(new_state_dict, strict=False)
+        trained = {name for name, _ in model.named_parameters()}
+        absent = [k for k in result.missing_keys if k in trained]
+        if absent:
+            raise RuntimeError(
+                f"pretrained checkpoint is missing {len(absent)} trained tensors: "
+                f"{absent[:8]}. Refusing to start from a partly random model."
+            )
         print("Pretrained weights loaded!")
 
         if fresh_epochs:
@@ -1188,13 +1195,17 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, scal
             new_state_dict[k] = v
 
     missing_keys, unexpected_keys = model.load_state_dict(new_state_dict, strict=False)
+    trained = {name for name, _ in model.named_parameters()}
+    absent = [k for k in missing_keys if k in trained]
+    if absent:
+        raise RuntimeError(
+            f"resuming from {checkpoint_path} but {len(absent)} trained tensors are "
+            f"missing: {absent[:8]}{' ...' if len(absent) > 8 else ''}. Continuing would "
+            f"train those from scratch under a decayed learning rate and restored "
+            f"optimizer moments, which is worse than starting over."
+        )
     if missing_keys:
-        print(f"Warning: Missing keys in checkpoint: {len(missing_keys)} keys")
-        if len(missing_keys) <= 10:
-            for key in missing_keys:
-                print(f"  - {key}")
-        else:
-            print(f"  First 10: {missing_keys[:10]}")
+        print(f"Note: {len(missing_keys)} non-parameter keys absent (buffers): {missing_keys[:5]}")
     if unexpected_keys:
         print(f"Warning: Unexpected keys in checkpoint: {len(unexpected_keys)} keys")
         if len(unexpected_keys) <= 10:
@@ -1379,10 +1390,14 @@ def generate(text,
         else:
             new_state_dict[k] = v
 
-    model.load_state_dict(new_state_dict, strict=False)
-
-    if use_half_precision and device.type == 'cuda':
-        model = model.half()
+    result = model.load_state_dict(new_state_dict, strict=False)
+    trained = {name for name, _ in model.named_parameters()}
+    absent = [k for k in result.missing_keys if k in trained]
+    if absent:
+        raise RuntimeError(
+            f"{model_path} is missing {len(absent)} trained tensors: {absent[:8]}. "
+            f"Refusing to generate from a partly random model."
+        )
 
     model.eval()
 

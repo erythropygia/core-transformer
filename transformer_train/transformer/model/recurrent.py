@@ -102,6 +102,14 @@ class RecurrentTransformer(Transformer):
         assert T <= self.cos.size(1), f"Sequence length {T} exceeds rotary embeddings cache {self.cos.size(1)}"
         assert idx.device == self.cos.device, f"Rotary embeddings and idx are on different devices"
         assert self.cos.dtype == torch.bfloat16, "Rotary embeddings must be in bfloat16"
+        if self.wte.weight.dtype != self.body_dtype():
+            assert torch.is_autocast_enabled(idx.device.type), (
+                f"embedding_dtype={self.config.get('embedding_dtype')!r} keeps wte in "
+                f"{self.wte.weight.dtype} while the blocks are in {self.body_dtype()}. "
+                f"That split only works inside autocast, which is not active here. "
+                f"Wrap this call in torch.amp.autocast, or drop embedding_dtype from the "
+                f"config to let wte follow the blocks."
+            )
 
         if kv_cache is not None:
             need = self.cache_num_layers(r)
