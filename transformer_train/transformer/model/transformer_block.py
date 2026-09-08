@@ -191,6 +191,9 @@ class Transformer(nn.Module):
     def get_device(self):
         return self.wte.weight.device
 
+    def extra_parameters(self):
+        return []
+
     def setup_optimizers(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.9, 0.95), scalar_lr=0.5):
         model_dim = self.config['n_embd']
         ddp, rank, local_rank, world_size = get_dist_info()
@@ -200,7 +203,15 @@ class Transformer(nn.Module):
         lm_head_params = list(self.lm_head.parameters())
         resid_params = [self.resid_lambdas]
         x0_params = [self.x0_lambdas]
-        assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params) + len(resid_params) + len(x0_params)
+        extra_params = list(self.extra_parameters())
+        assigned = {id(p) for p in (matrix_params + embedding_params + lm_head_params
+                                    + resid_params + x0_params + extra_params)}
+        unassigned = [n for n, p in self.named_parameters() if id(p) not in assigned]
+        assert not unassigned, (
+            f"{len(unassigned)} parameters belong to no optimizer group and would never "
+            f"be trained: {unassigned[:6]}. A subclass that adds parameters must return "
+            f"them from extra_parameters()."
+        )
 
         dmodel_lr_scale = (model_dim / 768) ** -0.5
         print0(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {dmodel_lr_scale:.6f}")
@@ -222,10 +233,10 @@ class Transformer(nn.Module):
         muon_kwargs = dict(lr=matrix_lr, momentum=0.95, weight_decay=weight_decay)
         if ddp:
             from ..training.muon import DistMuon
-            muon_optimizer = DistMuon(matrix_params, **muon_kwargs)
+            muon_optimizer = DistMuon(matrix_params + extra_params, **muon_kwargs)
         else:
             from ..training.muon import Muon
-            muon_optimizer = Muon(matrix_params, **muon_kwargs)
+            muon_optimizer = Muon(matrix_params + extra_params, **muon_kwargs)
 
         optimizers = [adamw_optimizer, muon_optimizer]
         for opt in optimizers:
@@ -241,6 +252,10 @@ class Transformer(nn.Module):
         assert idx.device == self.cos.device, f"Rotary embeddings and idx are on different devices"
         assert self.cos.dtype == torch.bfloat16, "Rotary embeddings must be in bfloat16"
         T0 = 0 if kv_cache is None else kv_cache.get_pos()
+        assert T0 + T <= self.cos.size(1), (
+            f"position {T0}+{T} exceeds the rotary cache of {self.cos.size(1)}; the slice "
+            f"would silently come back short and break the attention shapes"
+        )
         cos_sin = self.cos[:, T0:T0+T], self.sin[:, T0:T0+T]
 
         x = self.wte(idx)

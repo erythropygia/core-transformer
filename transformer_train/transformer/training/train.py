@@ -1089,6 +1089,14 @@ def train(
 
     return model
 
+def unwrap_model(model):
+    inner = model
+    for attr in ('module', '_orig_mod'):
+        while hasattr(inner, attr):
+            inner = getattr(inner, attr)
+    return inner
+
+
 def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step, 
                    best_val_loss, best_perplexity, config, tokenizer_path, 
                    checkpoint_path="checkpoint.safetensors", muon_optimizer=None, muon_scheduler=None, dataloader_state_dict=None):
@@ -1117,7 +1125,7 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, global_step,
         'training_config': json.dumps(TRAINING_CONFIG),
         'model_config': json.dumps(MODEL_CONFIG),
         'weight_tying': 'false',
-        'model_type': 'Transformer'
+        'model_type': type(unwrap_model(model)).__name__
     }
 
     if dataloader_state_dict is not None:

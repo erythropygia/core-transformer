@@ -111,7 +111,7 @@ def batch_sequences_lm(tokenizer, prompts):
 @torch.no_grad()
 def forward_model(model, input_ids):
     batch_size, seq_len = input_ids.size()
-    logits, _ = model.forward(input_ids, targets=None)
+    logits = model.forward(input_ids, targets=None)
     target_ids = torch.roll(input_ids, shifts=-1, dims=1)
     losses = torch.nn.functional.cross_entropy(
         logits.view(batch_size * seq_len, -1),

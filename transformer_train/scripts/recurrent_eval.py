@@ -15,7 +15,9 @@ from transformer.tokenizer import get_token_bytes
 
 
 @torch.no_grad()
-def eval_at_depth(model, batches, r, token_bytes, autocast_ctx):
+def eval_at_depth(model, batches, r, token_bytes, autocast_ctx, state_seed=1234):
+    if getattr(model, "state_generator", None) is not None:
+        model.state_generator.manual_seed(state_seed)
     total_nats = 0.0
     total_bytes = 0
     total_tokens = 0
@@ -63,6 +65,9 @@ def main():
             f"{ckpt} is not a recurrent checkpoint. Train with "
             f"MODEL_CONFIG['recurrent']['enabled'] = True."
         )
+
+    if getattr(model, "state_init", None) == "random":
+        model.state_generator = torch.Generator(device=device)
 
     token_bytes = get_token_bytes(tokenizer, device=device)
 

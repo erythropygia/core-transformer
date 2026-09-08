@@ -50,6 +50,7 @@ class RecurrentTransformer(Transformer):
         self.backprop_depth = rc.get('backprop_depth', 8)
         self.state_init = rc.get('state_init', 'random')
         self.state_init_std = rc.get('state_init_std', 0.02)
+        self.state_generator = None
 
         n_embd = config['n_embd']
         self.use_adapter = rc.get('adapter', True)
@@ -69,13 +70,17 @@ class RecurrentTransformer(Transformer):
         r = self.r_max if r is None else r
         return self.n_prelude + self.n_recurrent * r + self.n_coda
 
-    def setup_optimizers(self, **kwargs):
-        optimizers = super().setup_optimizers(**kwargs)
-        if self.adapter is not None:
-            optimizers[1].add_param_group(dict(params=[self.adapter.weight]))
-            for group in optimizers[1].param_groups:
-                group.setdefault("initial_lr", group["lr"])
-        return optimizers
+    def init_state(self, e):
+        if self.state_init != 'random':
+            return e
+        if self.state_generator is None:
+            return torch.randn_like(e) * self.state_init_std
+        return self.state_init_std * torch.randn(
+            e.shape, generator=self.state_generator, device=e.device, dtype=e.dtype
+        )
+
+    def extra_parameters(self):
+        return [] if self.adapter is None else [self.adapter.weight]
 
     def _run(self, x, indices, cos_sin, kv_cache, cache_base, x0):
         for offset, i in enumerate(indices):
@@ -94,7 +99,24 @@ class RecurrentTransformer(Transformer):
         r = self.r_default if r is None else int(r)
         assert r >= 1
 
+        assert T <= self.cos.size(1), f"Sequence length {T} exceeds rotary embeddings cache {self.cos.size(1)}"
+        assert idx.device == self.cos.device, f"Rotary embeddings and idx are on different devices"
+        assert self.cos.dtype == torch.bfloat16, "Rotary embeddings must be in bfloat16"
+
+        if kv_cache is not None:
+            need = self.cache_num_layers(r)
+            assert kv_cache.num_layers >= need, (
+                f"kv cache holds {kv_cache.num_layers} layer slots but r={r} needs "
+                f"{need} (prelude {self.n_prelude} + {self.n_recurrent}x{r} + coda "
+                f"{self.n_coda}). Size the cache with cache_num_layers(r) for the same r "
+                f"you generate with."
+            )
+
         T0 = 0 if kv_cache is None else kv_cache.get_pos()
+        assert T0 + T <= self.cos.size(1), (
+            f"position {T0}+{T} exceeds the rotary cache of {self.cos.size(1)}; the "
+            f"slice would silently come back short and break the attention shapes"
+        )
         cos_sin = self.cos[:, T0:T0 + T], self.sin[:, T0:T0 + T]
 
         x = norm(self.wte(idx))
@@ -103,10 +125,7 @@ class RecurrentTransformer(Transformer):
         use_cache = kv_cache is not None
         e = self._run(x, self.prelude_idx, cos_sin, kv_cache, 0 if use_cache else None, x0)
 
-        if self.state_init == 'random':
-            s = torch.randn_like(e) * self.state_init_std
-        else:
-            s = e
+        s = self.init_state(e)
 
         n_grad = min(self.backprop_depth, r)
         n_nograd = r - n_grad

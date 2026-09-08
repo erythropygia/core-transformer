@@ -10,8 +10,7 @@ def evaluate_bpb(model, batches, steps, token_bytes):
     batch_iter = iter(batches)
     for _ in range(steps):
         x, y = next(batch_iter)
-        _, loss2d = model.forward(x, targets=y)
-        loss2d = loss2d.view(-1)
+        loss2d = model.forward(x, targets=y, loss_reduction='none').view(-1)
         y = y.view(-1)
         if (y.int() < 0).any():
             valid = y >= 0

@@ -51,19 +51,24 @@ class Engine:
         self.tokenizer = tokenizer
 
     @torch.inference_mode()
-    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, top_p=1.0, repetition_penalty=1.0, seed=42):
+    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, top_p=1.0, repetition_penalty=1.0, seed=42, r=None):
         assert isinstance(tokens, list) and isinstance(tokens[0], int), "expecting list of ints"
         device = self.model.get_device()
         rng = torch.Generator(device=device)
         rng.manual_seed(seed)
 
+        is_recurrent = hasattr(self.model, 'cache_num_layers')
+        r = getattr(self.model, 'r_default', None) if r is None else int(r)
+        fwd_kwargs = {'r': r} if is_recurrent else {}
+        if is_recurrent and getattr(self.model, 'state_init', None) == 'random':
+            state_gen = torch.Generator(device=device)
+            state_gen.manual_seed(seed + 1)
+            self.model.state_generator = state_gen
+
         stop_ids = set(self.tokenizer.get_stop_token_ids()) if hasattr(self.tokenizer, 'get_stop_token_ids') else set()
 
         m = self.model.config
-        if hasattr(self.model, 'cache_num_layers'):
-            cache_layers = self.model.cache_num_layers(getattr(self.model, 'r_default', None))
-        else:
-            cache_layers = m['n_layer']
+        cache_layers = self.model.cache_num_layers(r) if is_recurrent else m['n_layer']
         kv_model_kwargs = {
             "num_heads": m.get('n_kv_head', m['n_head']),
             "head_dim": m['n_embd'] // m['n_head'],
@@ -75,7 +80,7 @@ class Engine:
             **kv_model_kwargs,
         )
         ids = torch.tensor([tokens], dtype=torch.long, device=device)
-        logits = self.model.forward(ids, kv_cache=kv_cache_prefill)
+        logits = self.model.forward(ids, kv_cache=kv_cache_prefill, **fwd_kwargs)
         logits = logits[:, -1, :]
 
         generated_tokens_per_sample = [[] for _ in range(num_samples)]
@@ -108,7 +113,7 @@ class Engine:
                 sampled_tokens = [sampled_tokens[0]] * num_samples
                 first_iteration = False
             else:
-                logits = self.model.forward(ids, kv_cache=kv_cache_decode)
+                logits = self.model.forward(ids, kv_cache=kv_cache_decode, **fwd_kwargs)
                 logits = logits[:, -1, :]
 
                 sampled_tokens = []
