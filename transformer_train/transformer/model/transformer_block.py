@@ -138,10 +138,14 @@ class Transformer(nn.Module):
 
         self._sync_embedding_dtype()
 
+    def body_dtype(self):
+        return self.h[0].attn.c_q.weight.dtype if len(self.h) else self.wte.weight.dtype
+
     def _sync_embedding_dtype(self):
         self.cos = self.cos.to(dtype=torch.bfloat16)
         self.sin = self.sin.to(dtype=torch.bfloat16)
-        target = torch.bfloat16 if self.wte.weight.device.type == 'cuda' else torch.float32
+        declared = self.config.get('embedding_dtype')
+        target = self.body_dtype() if declared is None else getattr(torch, declared)
         if self.wte.weight.dtype != target:
             self.wte.to(dtype=target)
 
@@ -201,7 +205,13 @@ class Transformer(nn.Module):
         lm_head_params = list(self.lm_head.parameters())
         resid_params = [self.resid_lambdas]
         x0_params = [self.x0_lambdas]
-        assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params) + len(resid_params) + len(x0_params)
+        assigned = {id(p) for p in (matrix_params + embedding_params + lm_head_params
+                                    + resid_params + x0_params)}
+        unassigned = [n for n, p in self.named_parameters() if id(p) not in assigned]
+        assert not unassigned, (
+            f"{len(unassigned)} parameters belong to no optimizer group and would never "
+            f"be trained: {unassigned[:6]}"
+        )
 
         dmodel_lr_scale = (model_dim / 768) ** -0.5
         print0(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {dmodel_lr_scale:.6f}")
@@ -241,7 +251,19 @@ class Transformer(nn.Module):
         assert T <= self.cos.size(1), f"Sequence length {T} exceeds rotary embeddings cache {self.cos.size(1)}"
         assert idx.device == self.cos.device, f"Rotary embeddings and idx are on different devices"
         assert self.cos.dtype == torch.bfloat16, "Rotary embeddings must be in bfloat16"
+        if self.wte.weight.dtype != self.body_dtype():
+            assert torch.is_autocast_enabled(idx.device.type), (
+                f"embedding_dtype={self.config.get('embedding_dtype')!r} keeps wte in "
+                f"{self.wte.weight.dtype} while the blocks are in {self.body_dtype()}. "
+                f"That split only works inside autocast, which is not active here. "
+                f"Wrap this call in torch.amp.autocast, or drop embedding_dtype from the "
+                f"config to let wte follow the blocks."
+            )
         T0 = 0 if kv_cache is None else kv_cache.get_pos()
+        assert T0 + T <= self.cos.size(1), (
+            f"position {T0}+{T} exceeds the rotary cache of {self.cos.size(1)}; the slice "
+            f"would silently come back short and break the attention shapes"
+        )
         cos_sin = self.cos[:, T0:T0+T], self.sin[:, T0:T0+T]
 
         x = self.wte(idx)
@@ -279,11 +301,20 @@ class Transformer(nn.Module):
                 stop_ids = {self.tokenizer.get_eos_token_id()}
         finished = torch.zeros(idx.size(0), dtype=torch.bool, device=idx.device)
 
+        if kv_cache is not None:
+            raise ValueError(
+                "Transformer.generate re-feeds the whole prefix every step, so a live "
+                "kv_cache would be written at the wrong positions and advanced by the "
+                "full length each time. Use Engine.generate for cached decoding."
+            )
+
         for _ in range(max_new_tokens):
             idx_cond = idx if idx.size(1) <= self.config.get('block_size', 1024) else idx[:, -self.config.get('block_size', 1024):]
 
-            logits = self(idx_cond, kv_cache=kv_cache)
-            logits = logits[:, -1, :] / temperature
+            logits = self(idx_cond)
+            logits = logits[:, -1, :]
+            if temperature > 0:
+                logits = logits / temperature
 
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
@@ -300,8 +331,16 @@ class Transformer(nn.Module):
                 indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
                 logits[indices_to_remove] = -float('Inf')
 
-            probs = F.softmax(logits, dim=-1)
-            idx_next = torch.multinomial(probs, num_samples=1)
+            if temperature > 0:
+                probs = F.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(probs, num_samples=1)
+            else:
+                idx_next = logits.argmax(dim=-1, keepdim=True)
+
+            if stop_ids and bool(finished.any()):
+                pad = next(iter(stop_ids))
+                idx_next = torch.where(finished.unsqueeze(-1), torch.full_like(idx_next, pad), idx_next)
+
             idx = torch.cat((idx, idx_next), dim=1)
 
             if stop_ids:

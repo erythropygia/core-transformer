@@ -6,6 +6,7 @@ MODEL_CONFIG = {
     'block_size': 1024,
     'vocab_size': None,
     'window_pattern': 'L',
+    'embedding_dtype': None,
 }
 
 TRAINING_CONFIG = {

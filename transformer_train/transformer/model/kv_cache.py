@@ -42,10 +42,8 @@ class KVCache:
             return None, None
         if not 0 <= layer_idx < self.num_layers:
             raise IndexError(
-                f"layer slot {layer_idx} outside a cache of {self.num_layers} slots. "
-                f"A recurrent model needs cache_num_layers(r) slots for the r it runs "
-                f"with; a negative index would otherwise wrap and silently read the "
-                f"wrong layer."
+                f"layer slot {layer_idx} outside a cache of {self.num_layers} slots; "
+                f"a negative index would otherwise wrap and silently read the wrong layer."
             )
         return self.kv_cache[layer_idx, 0], self.kv_cache[layer_idx, 1]
 

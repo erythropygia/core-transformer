@@ -26,7 +26,18 @@ def load_model_from_checkpoint(checkpoint_path, device, eval_mode=True):
     state = load_file(checkpoint_path)
     prefix = '_orig_mod.'
     state = {(k[len(prefix):] if k.startswith(prefix) else k): v for k, v in state.items()}
-    model.load_state_dict(state, strict=False)
+    result = model.load_state_dict(state, strict=False)
+    parameters = {name for name, _ in model.named_parameters()}
+    absent = [k for k in result.missing_keys if k in parameters]
+    if absent:
+        raise RuntimeError(
+            f"{checkpoint_path} is missing {len(absent)} trained tensors: "
+            f"{absent[:8]}{' ...' if len(absent) > 8 else ''}. strict=False would have "
+            f"loaded a partly random model and reported nothing."
+        )
+    if result.unexpected_keys:
+        print0(f"  ignoring {len(result.unexpected_keys)} unused tensors in checkpoint: "
+               f"{result.unexpected_keys[:4]}")
     if eval_mode:
         model.eval()
 
